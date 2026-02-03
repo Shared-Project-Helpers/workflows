@@ -149,10 +149,11 @@ jobs:
                 "replace": "exact replacement code"
               }}
             ],
-            "commit_message": "fix: description of all fixes applied"
+            "commit_message": "fix: brief single-line description"
           }}
 
           IMPORTANT:
+          - The commit_message MUST be a single line (no newlines)
           - The "search" field must match EXACTLY what's in the file (including whitespace)
           - Keep fixes minimal and focused on the review feedback
           - Do not make unrelated changes
@@ -203,10 +204,14 @@ jobs:
               except Exception as e:
                   print(f"✗ Error fixing {file_path}: {e}")
 
-          # Write outputs
+          # Write outputs - sanitize commit message to single line
+          commit_msg = fix_data.get('commit_message', 'fix: apply review feedback')
+          # Replace newlines and limit length for safe output
+          commit_msg = commit_msg.replace('\n', ' ').replace('\r', '').strip()[:200]
+
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
               f.write(f"files_changed={len(files_changed)}\n")
-              f.write(f"commit_message={fix_data.get('commit_message', 'fix: apply review feedback')[:200]}\n")
+              f.write(f"commit_message={commit_msg}\n")
 
           print(f"\nTotal files changed: {len(files_changed)}")
           PYTHON_SCRIPT
