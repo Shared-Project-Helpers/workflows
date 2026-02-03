@@ -1,0 +1,233 @@
+name: Claude Code Review
+
+on:
+  workflow_call:
+    inputs:
+      model:
+        description: 'Claude model to use'
+        required: false
+        default: 'claude-sonnet-4-20250514'
+        type: string
+      review_guidelines:
+        description: 'Additional review guidelines (appended to defaults)'
+        required: false
+        default: ''
+        type: string
+      diff_limit:
+        description: 'Max diff size in bytes'
+        required: false
+        default: '50000'
+        type: string
+      excluded_files:
+        description: 'Git pathspec for excluded files'
+        required: false
+        default: ':!*.lock :!package-lock.json'
+        type: string
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: true
+    outputs:
+      decision:
+        description: 'Review decision (APPROVE, REQUEST_CHANGES, or COMMENT)'
+        value: ${{ jobs.review.outputs.decision }}
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  review:
+    name: Code Review
+    runs-on: ubuntu-latest
+    outputs:
+      decision: ${{ steps.review.outputs.decision }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.ref || github.head_ref }}
+
+      - name: Get PR info
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            let prNumber, baseSha, headSha;
+
+            if (context.eventName === 'pull_request' || context.eventName === 'pull_request_target') {
+              prNumber = context.payload.pull_request.number;
+              baseSha = context.payload.pull_request.base.sha;
+              headSha = context.payload.pull_request.head.sha;
+            } else {
+              prNumber = context.payload.issue.number;
+              const { data: pr } = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: prNumber
+              });
+              baseSha = pr.base.sha;
+              headSha = pr.head.sha;
+            }
+
+            core.setOutput('number', prNumber);
+            core.setOutput('base_sha', baseSha);
+            core.setOutput('head_sha', headSha);
+
+      - name: Get diff
+        id: diff
+        run: |
+          DIFF=$(git diff ${{ steps.pr.outputs.base_sha }}..${{ steps.pr.outputs.head_sha }} -- . ${{ inputs.excluded_files }})
+          echo "diff<<EOF" >> $GITHUB_OUTPUT
+          echo "$DIFF" | head -c ${{ inputs.diff_limit }} >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Review with Claude
+        id: review
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          PR_DIFF: ${{ steps.diff.outputs.diff }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          MODEL: ${{ inputs.model }}
+          EXTRA_GUIDELINES: ${{ inputs.review_guidelines }}
+        run: |
+          pip install anthropic
+          python << 'PYTHON_SCRIPT'
+          import anthropic
+          import os
+          import json
+          import re
+
+          client = anthropic.Anthropic()
+
+          diff = os.environ.get('PR_DIFF', '')
+          pr_number = os.environ.get('PR_NUMBER', '')
+          model = os.environ.get('MODEL', 'claude-sonnet-4-20250514')
+          extra_guidelines = os.environ.get('EXTRA_GUIDELINES', '')
+
+          extra_section = f"\n\n## Project-Specific Guidelines\n{extra_guidelines}" if extra_guidelines else ""
+
+          prompt = f"""You are a senior code reviewer. Review this pull request diff and provide feedback.
+
+          ## Review Guidelines
+          - Focus on bugs, security issues, and logic errors
+          - Check for proper error handling
+          - Look for potential performance issues
+          - Check test coverage for new code
+          - Verify no secrets or credentials are committed
+          {extra_section}
+
+          ## Response Format
+          Respond with a JSON object:
+          {{
+            "decision": "APPROVE" | "REQUEST_CHANGES" | "COMMENT",
+            "summary": "Brief summary of the review",
+            "issues": [
+              {{
+                "severity": "critical" | "major" | "minor" | "suggestion",
+                "file": "path/to/file",
+                "line": 42,
+                "description": "Description of the issue",
+                "suggestion": "How to fix it"
+              }}
+            ]
+          }}
+
+          If there are no significant issues, set decision to "APPROVE".
+          Only use "REQUEST_CHANGES" for critical or major issues.
+
+          ## Diff
+          ```diff
+          {diff[:40000]}
+          ```
+          """
+
+          response = client.messages.create(
+              model=model,
+              max_tokens=4096,
+              messages=[{"role": "user", "content": prompt}]
+          )
+
+          result = response.content[0].text
+
+          # Try to extract JSON from the response
+          try:
+              json_match = re.search(r'\{[\s\S]*\}', result)
+              if json_match:
+                  review_data = json.loads(json_match.group())
+              else:
+                  review_data = {"decision": "COMMENT", "summary": result, "issues": []}
+          except:
+              review_data = {"decision": "COMMENT", "summary": result, "issues": []}
+
+          # Write outputs
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f"decision={review_data.get('decision', 'COMMENT')}\n")
+              f.write(f"summary={review_data.get('summary', 'Review completed')[:500]}\n")
+
+          with open('review_result.json', 'w') as f:
+              json.dump(review_data, f)
+
+          print(json.dumps(review_data, indent=2))
+          PYTHON_SCRIPT
+
+      - name: Post review comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const reviewData = JSON.parse(fs.readFileSync('review_result.json', 'utf8'));
+
+            let body = `## 🤖 Claude Code Review\n\n`;
+            body += `**Decision:** ${reviewData.decision}\n\n`;
+            body += `### Summary\n${reviewData.summary}\n\n`;
+
+            if (reviewData.issues && reviewData.issues.length > 0) {
+              body += `### Issues Found\n\n`;
+              for (const issue of reviewData.issues) {
+                const emoji = {
+                  critical: '🔴',
+                  major: '🟠',
+                  minor: '🟡',
+                  suggestion: '💡'
+                }[issue.severity] || '📝';
+
+                body += `${emoji} **${issue.severity.toUpperCase()}** `;
+                if (issue.file) body += `in \`${issue.file}\``;
+                if (issue.line) body += ` (line ${issue.line})`;
+                body += `\n`;
+                body += `> ${issue.description}\n`;
+                if (issue.suggestion) {
+                  body += `\n**Suggestion:** ${issue.suggestion}\n`;
+                }
+                body += `\n`;
+              }
+            }
+
+            body += `\n---\n*Reviewed by Claude (${{ inputs.model }})*`;
+
+            // Post comment
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: ${{ steps.pr.outputs.number }},
+              body: body
+            });
+
+            // Submit review if approving or requesting changes
+            if (reviewData.decision === 'APPROVE' || reviewData.decision === 'REQUEST_CHANGES') {
+              await github.rest.pulls.createReview({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: ${{ steps.pr.outputs.number }},
+                event: reviewData.decision,
+                body: reviewData.summary
+              });
+            }
