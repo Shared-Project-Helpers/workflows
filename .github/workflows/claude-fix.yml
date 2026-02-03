@@ -30,6 +30,9 @@ on:
     secrets:
       ANTHROPIC_API_KEY:
         required: true
+      PAT:
+        required: false
+        description: 'Personal Access Token for pushing (enables workflow triggers)'
     outputs:
       files_changed:
         description: 'Number of files changed'
@@ -65,7 +68,7 @@ jobs:
         with:
           ref: ${{ steps.pr.outputs.head_ref }}
           fetch-depth: 0
-          token: ${{ github.token }}
+          token: ${{ secrets.PAT || github.token }}
 
       - name: Get review comments
         id: comments
