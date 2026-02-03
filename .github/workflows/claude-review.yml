@@ -216,7 +216,8 @@ jobs:
               }
             }
 
-            body += `\n---\n*Reviewed by Claude (${{ inputs.model }})*`;
+            const prUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/pull/${{ steps.pr.outputs.number }}`;
+            body += `\n---\n*Reviewed by Claude (${{ inputs.model }})*\n\n**PR:** ${prUrl}`;
 
             // Post comment
             await github.rest.issues.createComment({

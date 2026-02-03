@@ -237,6 +237,7 @@ jobs:
         with:
           script: |
             const filesChanged = parseInt('${{ steps.fix.outputs.files_changed }}') || 0;
+            const prUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/pull/${{ steps.pr.outputs.number }}`;
 
             let body;
             if (filesChanged > 0) {
@@ -249,7 +250,9 @@ jobs:
             The review agent will run again automatically to verify the fixes.
 
             ---
-            *Fixed by Claude Fix Agent*`;
+            *Fixed by Claude Fix Agent*
+
+            **PR:** ${prUrl}`;
             } else {
               body = `## 🔧 Claude Fix Agent
 
@@ -258,7 +261,9 @@ jobs:
             Please review the feedback and make changes manually, or comment \`@claude fix\` with more specific instructions.
 
             ---
-            *Claude Fix Agent*`;
+            *Claude Fix Agent*
+
+            **PR:** ${prUrl}`;
             }
 
             await github.rest.issues.createComment({
