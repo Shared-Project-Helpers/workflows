@@ -35,11 +35,6 @@ on:
         description: 'Number of files changed'
         value: ${{ jobs.fix.outputs.files_changed }}
 
-permissions:
-  contents: write
-  pull-requests: write
-  issues: write
-
 jobs:
   fix:
     name: Apply Fixes
