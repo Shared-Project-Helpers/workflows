@@ -23,6 +23,16 @@ on:
         required: false
         default: ':!*.lock :!package-lock.json'
         type: string
+      auto_merge_label:
+        description: 'Label that enables auto-merge on approval (empty = disabled)'
+        required: false
+        default: ''
+        type: string
+      auto_merge_method:
+        description: 'Merge method when auto-merging (merge, squash, rebase)'
+        required: false
+        default: 'squash'
+        type: string
     secrets:
       ANTHROPIC_API_KEY:
         required: true
@@ -230,4 +240,74 @@ jobs:
                 event: reviewData.decision,
                 body: reviewData.summary
               });
+            }
+
+      - name: Auto-merge if approved and labeled
+        if: steps.review.outputs.decision == 'APPROVE' && inputs.auto_merge_label != ''
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = ${{ steps.pr.outputs.number }};
+            const autoMergeLabel = '${{ inputs.auto_merge_label }}';
+            const mergeMethod = '${{ inputs.auto_merge_method }}';
+
+            // Get PR details including labels
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber
+            });
+
+            const hasAutoMergeLabel = pr.labels.some(label => label.name === autoMergeLabel);
+
+            if (!hasAutoMergeLabel) {
+              console.log(`PR does not have '${autoMergeLabel}' label. Skipping auto-merge.`);
+              return;
+            }
+
+            console.log(`PR has '${autoMergeLabel}' label. Attempting auto-merge...`);
+
+            try {
+              // Enable auto-merge (GitHub will merge when all requirements are met)
+              await github.graphql(`
+                mutation($pullRequestId: ID!, $mergeMethod: PullRequestMergeMethod!) {
+                  enablePullRequestAutoMerge(input: {
+                    pullRequestId: $pullRequestId,
+                    mergeMethod: $mergeMethod
+                  }) {
+                    pullRequest {
+                      autoMergeRequest {
+                        enabledAt
+                      }
+                    }
+                  }
+                }
+              `, {
+                pullRequestId: pr.node_id,
+                mergeMethod: mergeMethod.toUpperCase()
+              });
+
+              console.log('Auto-merge enabled successfully.');
+
+              // Post comment about auto-merge
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body: `🤖 **Auto-merge enabled.** This PR will be merged automatically when all required checks pass.`
+              });
+            } catch (error) {
+              console.log(`Could not enable auto-merge: ${error.message}`);
+              // Fallback: try direct merge if auto-merge not available
+              try {
+                await github.rest.pulls.merge({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: prNumber,
+                  merge_method: mergeMethod
+                });
+                console.log('PR merged directly.');
+              } catch (mergeError) {
+                console.log(`Could not merge PR: ${mergeError.message}`);
+              }
             }

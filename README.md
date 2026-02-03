@@ -37,6 +37,9 @@ jobs:
       review_guidelines: |
         - Follow Kotlin coding conventions
         - Use coroutines for async operations
+      # Optional: enable auto-merge when PR has this label
+      auto_merge_label: 'auto-merge'
+      auto_merge_method: 'squash'
 ```
 
 **Inputs:**
@@ -47,6 +50,8 @@ jobs:
 | `review_guidelines` | No | `''` | Additional project-specific guidelines |
 | `diff_limit` | No | `50000` | Max diff size in bytes |
 | `excluded_files` | No | `:!*.lock :!package-lock.json` | Git pathspec for excluded files |
+| `auto_merge_label` | No | `''` | Label that enables auto-merge on approval (empty = disabled) |
+| `auto_merge_method` | No | `squash` | Merge method: `merge`, `squash`, or `rebase` |
 
 **Outputs:**
 
