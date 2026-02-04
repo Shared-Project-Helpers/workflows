@@ -83,6 +83,30 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.PAT || github.token }}
 
+      - name: Update branch if behind base
+        id: update-branch
+        run: |
+          git config user.name "${{ inputs.commit_author_name }}"
+          git config user.email "${{ inputs.commit_author_email }}"
+
+          BASE_BRANCH=$(gh pr view ${{ steps.pr.outputs.number }} --json baseRefName --jq .baseRefName)
+          git fetch origin "$BASE_BRANCH"
+
+          # Check if PR branch is behind the base branch
+          BEHIND=$(git rev-list --count HEAD..origin/"$BASE_BRANCH")
+          echo "behind=$BEHIND" >> $GITHUB_OUTPUT
+
+          if [ "$BEHIND" -gt 0 ]; then
+            echo "Branch is $BEHIND commit(s) behind $BASE_BRANCH. Merging..."
+            git merge origin/"$BASE_BRANCH" --no-edit
+            echo "merged=true" >> $GITHUB_OUTPUT
+          else
+            echo "Branch is up to date with $BASE_BRANCH."
+            echo "merged=false" >> $GITHUB_OUTPUT
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
       - name: Get review comments
         id: comments
         uses: actions/github-script@v7
@@ -234,16 +258,20 @@ jobs:
           PYTHON_SCRIPT
 
       - name: Commit and push fixes
-        if: steps.fix.outputs.files_changed != '0'
+        if: steps.fix.outputs.files_changed != '0' || steps.update-branch.outputs.merged == 'true'
         run: |
           git config user.name "${{ inputs.commit_author_name }}"
           git config user.email "${{ inputs.commit_author_email }}"
 
-          git add -A
-          git commit -m "${{ steps.fix.outputs.commit_message }}
+          # Commit code fixes if any
+          if [ "${{ steps.fix.outputs.files_changed }}" != "0" ]; then
+            git add -A
+            git commit -m "${{ steps.fix.outputs.commit_message }}
 
           Co-Authored-By: Claude <noreply@anthropic.com>"
+          fi
 
+          # Push (includes merge commit and/or fix commit)
           git push origin ${{ steps.pr.outputs.head_ref }}
 
       - name: Generate app token
@@ -260,35 +288,32 @@ jobs:
           github-token: ${{ steps.app-token.outputs.token || github.token }}
           script: |
             const filesChanged = parseInt('${{ steps.fix.outputs.files_changed }}') || 0;
+            const branchMerged = '${{ steps.update-branch.outputs.merged }}' === 'true';
+            const behindCount = '${{ steps.update-branch.outputs.behind }}';
             const prUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/pull/${{ steps.pr.outputs.number }}`;
             const fixerName = '${{ inputs.fixer_name }}';
 
-            let body;
-            if (filesChanged > 0) {
-              body = `## ${fixerName}
+            let body = `## ${fixerName}\n\n`;
 
-            Applied ${filesChanged} fix(es) based on review feedback.
-
-            **Commit:** \`${{ steps.fix.outputs.commit_message }}\`
-
-            The review agent will run again automatically to verify the fixes.
-
-            ---
-            *${fixerName}*
-
-            **PR:** ${prUrl}`;
-            } else {
-              body = `## ${fixerName}
-
-            No automatic fixes could be applied. The issues may require manual intervention.
-
-            Please review the feedback and make changes manually, or comment \`@claude fix\` with more specific instructions.
-
-            ---
-            *${fixerName}*
-
-            **PR:** ${prUrl}`;
+            // Branch update section
+            if (branchMerged) {
+              body += `**Branch updated:** Merged ${behindCount} commit(s) from the base branch.\n\n`;
             }
+
+            // Fixes section
+            if (filesChanged > 0) {
+              body += `**Fixes applied:** ${filesChanged} file(s) changed based on review feedback.\n\n`;
+              body += `**Commit:** \`${{ steps.fix.outputs.commit_message }}\`\n\n`;
+            }
+
+            if (filesChanged > 0 || branchMerged) {
+              body += `The review agent will run again automatically to verify.\n`;
+            } else {
+              body += `No automatic fixes could be applied. The issues may require manual intervention.\n\n`;
+              body += `Please review the feedback and make changes manually, or comment \`@claude fix\` with more specific instructions.\n`;
+            }
+
+            body += `\n---\n*${fixerName}*\n\n**PR:** ${prUrl}`;
 
             await github.rest.issues.createComment({
               owner: context.repo.owner,

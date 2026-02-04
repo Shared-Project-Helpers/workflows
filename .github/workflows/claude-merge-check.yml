@@ -35,6 +35,9 @@ on:
       blocking_issues:
         description: 'Number of blocking issues found'
         value: ${{ jobs.check.outputs.blocking_issues }}
+      behind:
+        description: 'Whether the PR branch is behind the base (true/false)'
+        value: ${{ jobs.check.outputs.behind }}
 
 jobs:
   check:
@@ -43,6 +46,7 @@ jobs:
     outputs:
       ready: ${{ steps.assess.outputs.ready }}
       blocking_issues: ${{ steps.assess.outputs.blocking_issues }}
+      behind: ${{ steps.pr.outputs.behind }}
 
     steps:
       - name: Get PR info
@@ -70,6 +74,16 @@ jobs:
             core.setOutput('draft', pr.draft);
             core.setOutput('title', pr.title);
             core.setOutput('body', (pr.body || '').substring(0, 1000));
+
+            // Check if branch is behind base
+            const { data: comparison } = await github.rest.repos.compareCommits({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              base: pr.head.sha,
+              head: pr.base.ref
+            });
+            const behind = comparison.ahead_by > 0;
+            core.setOutput('behind', String(behind));
 
       - name: Create check run on PR
         id: create-check
