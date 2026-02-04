@@ -250,15 +250,19 @@ jobs:
               body: body
             });
 
-            // Submit review if approving or requesting changes
+            // Submit formal review if approving or requesting changes
             if (reviewData.decision === 'APPROVE' || reviewData.decision === 'REQUEST_CHANGES') {
-              await github.rest.pulls.createReview({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                pull_number: ${{ steps.pr.outputs.number }},
-                event: reviewData.decision,
-                body: reviewData.summary
-              });
+              try {
+                await github.rest.pulls.createReview({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: ${{ steps.pr.outputs.number }},
+                  event: reviewData.decision,
+                  body: reviewData.summary
+                });
+              } catch (error) {
+                console.log(`Note: Could not submit formal review (${error.message}). The review comment was posted successfully.`);
+              }
             }
 
       - name: Auto-merge if approved and labeled
