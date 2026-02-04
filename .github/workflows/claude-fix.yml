@@ -32,12 +32,20 @@ on:
         required: false
         default: 'Claude Fix Agent'
         type: string
+      app_id:
+        description: 'GitHub App ID for custom bot identity (leave empty to use github-actions[bot])'
+        required: false
+        default: ''
+        type: string
     secrets:
       ANTHROPIC_API_KEY:
         required: true
       PAT:
         required: false
         description: 'Personal Access Token for pushing (enables workflow triggers)'
+      APP_PRIVATE_KEY:
+        required: false
+        description: 'GitHub App private key for custom bot identity'
     outputs:
       files_changed:
         description: 'Number of files changed'
@@ -238,9 +246,18 @@ jobs:
 
           git push origin ${{ steps.pr.outputs.head_ref }}
 
+      - name: Generate app token
+        id: app-token
+        if: inputs.app_id != ''
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ inputs.app_id }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
       - name: Comment on PR
         uses: actions/github-script@v7
         with:
+          github-token: ${{ steps.app-token.outputs.token || github.token }}
           script: |
             const filesChanged = parseInt('${{ steps.fix.outputs.files_changed }}') || 0;
             const prUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/pull/${{ steps.pr.outputs.number }}`;
