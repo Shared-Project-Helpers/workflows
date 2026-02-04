@@ -190,9 +190,11 @@ jobs:
             });
 
             // Get the most recent non-dismissed review from each reviewer
+            // Exclude reviews from github-actions[bot] (our own bot reviews)
             const latestReviews = {};
             for (const review of reviews) {
               if (review.state === 'DISMISSED') continue;
+              if (review.user.login === 'github-actions[bot]' || review.user.type === 'Bot') continue;
               const reviewer = review.user.login;
               latestReviews[reviewer] = review;
             }
@@ -289,12 +291,12 @@ jobs:
           {pr_body[:800]}
 
           ## Task
-          Assess merge readiness. Consider:
+          Assess merge readiness. You are one of the required reviewers — your approval is handled
+          separately, so do NOT consider whether there are other approving reviews. Only assess:
           1. Are all CI checks passing? (failed or pending = not ready)
-          2. Are there blocking reviews (changes requested)?
-          3. Is there at least one approval?
-          4. Are there merge conflicts? (mergeable=false or mergeable_state=dirty)
-          5. Is this a draft?
+          2. Are there outstanding change requests from human reviewers? (bot reviews are excluded)
+          3. Are there merge conflicts? (mergeable=false or mergeable_state=dirty)
+          4. Is this a draft?
 
           Respond with JSON:
           {{
@@ -303,7 +305,6 @@ jobs:
             "summary": "1-2 sentence assessment",
             "checks": {{
               "ci_passing": true/false,
-              "reviews_approved": true/false,
               "no_merge_conflicts": true/false,
               "not_draft": true/false,
               "no_change_requests": true/false
@@ -371,7 +372,6 @@ jobs:
             const checks = assessment.checks || {};
             const checkItems = [
               { key: 'ci_passing', label: 'All CI checks passing' },
-              { key: 'reviews_approved', label: 'Has approving reviews' },
               { key: 'no_change_requests', label: 'No outstanding change requests' },
               { key: 'no_merge_conflicts', label: 'No merge conflicts' },
               { key: 'not_draft', label: 'Not a draft PR' }
