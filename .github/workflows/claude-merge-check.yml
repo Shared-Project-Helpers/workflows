@@ -71,6 +71,42 @@ jobs:
             core.setOutput('title', pr.title);
             core.setOutput('body', (pr.body || '').substring(0, 1000));
 
+      - name: Wait for other checks to complete
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const sha = '${{ steps.pr.outputs.head_sha }}';
+            const ownName = 'Merge Readiness Check';
+            const maxWaitMs = 30 * 60 * 1000; // 30 minutes
+            const pollIntervalMs = 30 * 1000;  // 30 seconds
+            const startTime = Date.now();
+
+            while (true) {
+              const { data: checks } = await github.rest.checks.listForRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: sha
+              });
+
+              // Filter out our own check run
+              const otherChecks = checks.check_runs.filter(c => !c.name.includes(ownName));
+              const incomplete = otherChecks.filter(c => c.status !== 'completed');
+
+              if (incomplete.length === 0 && otherChecks.length > 0) {
+                console.log(`All ${otherChecks.length} other checks have completed.`);
+                break;
+              }
+
+              const elapsed = Date.now() - startTime;
+              if (elapsed > maxWaitMs) {
+                console.log(`Timed out after 30 minutes. ${incomplete.length} checks still running.`);
+                break;
+              }
+
+              console.log(`Waiting for ${incomplete.length} check(s) to complete: ${incomplete.map(c => c.name).join(', ')}`);
+              await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+            }
+
       - name: Get CI check status
         id: checks
         uses: actions/github-script@v7
@@ -82,11 +118,15 @@ jobs:
               ref: '${{ steps.pr.outputs.head_sha }}'
             });
 
-            const checkRuns = checks.check_runs.map(check => ({
-              name: check.name,
-              status: check.status,
-              conclusion: check.conclusion
-            }));
+            // Exclude our own check run from the assessment
+            const ownName = 'Merge Readiness Check';
+            const checkRuns = checks.check_runs
+              .filter(check => !check.name.includes(ownName))
+              .map(check => ({
+                name: check.name,
+                status: check.status,
+                conclusion: check.conclusion
+              }));
 
             const total = checkRuns.length;
             const successful = checkRuns.filter(c => c.conclusion === 'success').length;
