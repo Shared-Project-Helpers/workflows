@@ -71,6 +71,24 @@ jobs:
             core.setOutput('title', pr.title);
             core.setOutput('body', (pr.body || '').substring(0, 1000));
 
+      - name: Create check run on PR
+        id: create-check
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: checkRun } = await github.rest.checks.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name: 'Merge Readiness',
+              head_sha: '${{ steps.pr.outputs.head_sha }}',
+              status: 'in_progress',
+              output: {
+                title: 'Assessing merge readiness...',
+                summary: 'Waiting for other checks to complete before assessment.'
+              }
+            });
+            core.setOutput('check_run_id', checkRun.id);
+
       - name: Wait for other checks to complete
         uses: actions/github-script@v7
         with:
@@ -88,8 +106,8 @@ jobs:
                 ref: sha
               });
 
-              // Filter out our own check run
-              const otherChecks = checks.check_runs.filter(c => !c.name.includes(ownName));
+              // Filter out our own check runs
+              const otherChecks = checks.check_runs.filter(c => !c.name.includes(ownName) && c.name !== 'Merge Readiness');
               const incomplete = otherChecks.filter(c => c.status !== 'completed');
 
               if (incomplete.length === 0 && otherChecks.length > 0) {
@@ -118,10 +136,10 @@ jobs:
               ref: '${{ steps.pr.outputs.head_sha }}'
             });
 
-            // Exclude our own check run from the assessment
+            // Exclude our own check runs from the assessment
             const ownName = 'Merge Readiness Check';
             const checkRuns = checks.check_runs
-              .filter(check => !check.name.includes(ownName))
+              .filter(check => !check.name.includes(ownName) && check.name !== 'Merge Readiness')
               .map(check => ({
                 name: check.name,
                 status: check.status,
@@ -378,4 +396,38 @@ jobs:
               repo: context.repo.repo,
               issue_number: ${{ steps.pr.outputs.number }},
               body: body
+            });
+
+      - name: Update check run with result
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let conclusion = 'failure';
+            let title = 'Assessment failed';
+            let summary = 'Could not complete merge readiness assessment.';
+
+            try {
+              const assessment = JSON.parse(fs.readFileSync('assessment_result.json', 'utf8'));
+              conclusion = assessment.ready ? 'success' : 'failure';
+              title = assessment.ready ? 'Ready to merge' : 'Not ready to merge';
+              summary = assessment.summary || summary;
+              if (assessment.blocking_issues && assessment.blocking_issues.length > 0) {
+                summary += '\n\nBlocking issues:\n' + assessment.blocking_issues.map(i => `- ${i}`).join('\n');
+              }
+            } catch (e) {
+              console.log('Could not read assessment result:', e.message);
+            }
+
+            await github.rest.checks.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              check_run_id: ${{ steps.create-check.outputs.check_run_id }},
+              status: 'completed',
+              conclusion: conclusion,
+              output: {
+                title: title,
+                summary: summary
+              }
             });
