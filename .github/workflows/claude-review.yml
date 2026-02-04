@@ -33,6 +33,11 @@ on:
         required: false
         default: 'squash'
         type: string
+      reviewer_name:
+        description: 'Display name for the code reviewer persona'
+        required: false
+        default: 'Claude'
+        type: string
     secrets:
       ANTHROPIC_API_KEY:
         required: true
@@ -190,7 +195,8 @@ jobs:
             const fs = require('fs');
             const reviewData = JSON.parse(fs.readFileSync('review_result.json', 'utf8'));
 
-            let body = `## 🤖 Claude Code Review\n\n`;
+            const reviewerName = '${{ inputs.reviewer_name }}';
+            let body = `## ${reviewerName}'s Code Review\n\n`;
             body += `**Decision:** ${reviewData.decision}\n\n`;
             body += `### Summary\n${reviewData.summary}\n\n`;
 
@@ -217,7 +223,7 @@ jobs:
             }
 
             const prUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/pull/${{ steps.pr.outputs.number }}`;
-            body += `\n---\n*Reviewed by Claude (${{ inputs.model }})*\n\n**PR:** ${prUrl}`;
+            body += `\n---\n*Reviewed by ${reviewerName}*\n\n**PR:** ${prUrl}`;
 
             // Post comment
             await github.rest.issues.createComment({

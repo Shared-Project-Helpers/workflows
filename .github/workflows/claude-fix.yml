@@ -27,6 +27,11 @@ on:
         required: false
         default: 'claude-fix-agent@users.noreply.github.com'
         type: string
+      fixer_name:
+        description: 'Display name for the fix agent persona'
+        required: false
+        default: 'Claude Fix Agent'
+        type: string
     secrets:
       ANTHROPIC_API_KEY:
         required: true
@@ -83,7 +88,7 @@ jobs:
 
             // Find the most recent Claude review
             const claudeReview = comments
-              .filter(c => c.body.includes('Claude Code Review'))
+              .filter(c => c.body.includes('Code Review'))
               .pop();
 
             if (claudeReview) {
@@ -113,6 +118,7 @@ jobs:
           PR_DIFF: ${{ steps.diff.outputs.diff }}
           MODEL: ${{ inputs.model }}
           MAX_TOKENS: ${{ inputs.max_tokens }}
+          FIXER_NAME: ${{ inputs.fixer_name }}
         run: |
           pip install anthropic
           python << 'PYTHON_SCRIPT'
@@ -238,10 +244,11 @@ jobs:
           script: |
             const filesChanged = parseInt('${{ steps.fix.outputs.files_changed }}') || 0;
             const prUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/pull/${{ steps.pr.outputs.number }}`;
+            const fixerName = '${{ inputs.fixer_name }}';
 
             let body;
             if (filesChanged > 0) {
-              body = `## 🔧 Claude Fix Agent
+              body = `## ${fixerName}
 
             Applied ${filesChanged} fix(es) based on review feedback.
 
@@ -250,18 +257,18 @@ jobs:
             The review agent will run again automatically to verify the fixes.
 
             ---
-            *Fixed by Claude Fix Agent*
+            *${fixerName}*
 
             **PR:** ${prUrl}`;
             } else {
-              body = `## 🔧 Claude Fix Agent
+              body = `## ${fixerName}
 
             No automatic fixes could be applied. The issues may require manual intervention.
 
             Please review the feedback and make changes manually, or comment \`@claude fix\` with more specific instructions.
 
             ---
-            *Claude Fix Agent*
+            *${fixerName}*
 
             **PR:** ${prUrl}`;
             }
