@@ -1,0 +1,341 @@
+name: Claude Merge Readiness Check
+
+on:
+  workflow_call:
+    inputs:
+      model:
+        description: 'Claude model to use'
+        required: false
+        default: 'claude-opus-4-5-20251101'
+        type: string
+      pr_number:
+        description: 'Pull request number to check'
+        required: true
+        type: string
+      checker_name:
+        description: 'Display name for the merge readiness checker persona'
+        required: false
+        default: 'Balin'
+        type: string
+      app_id:
+        description: 'GitHub App ID for custom bot identity (leave empty to use github-actions[bot])'
+        required: false
+        default: ''
+        type: string
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: true
+      APP_PRIVATE_KEY:
+        required: false
+        description: 'GitHub App private key for custom bot identity'
+    outputs:
+      ready:
+        description: 'Whether the PR is ready to merge (true/false)'
+        value: ${{ jobs.check.outputs.ready }}
+      blocking_issues:
+        description: 'Number of blocking issues found'
+        value: ${{ jobs.check.outputs.blocking_issues }}
+
+jobs:
+  check:
+    name: Merge Readiness Check
+    runs-on: ubuntu-latest
+    outputs:
+      ready: ${{ steps.assess.outputs.ready }}
+      blocking_issues: ${{ steps.assess.outputs.blocking_issues }}
+
+    steps:
+      - name: Get PR info
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = ${{ inputs.pr_number }};
+
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber
+            });
+
+            core.setOutput('number', prNumber);
+            core.setOutput('head_sha', pr.head.sha);
+            core.setOutput('base_ref', pr.base.ref);
+            core.setOutput('mergeable', pr.mergeable ?? 'unknown');
+            core.setOutput('mergeable_state', pr.mergeable_state ?? 'unknown');
+            core.setOutput('files_changed', pr.changed_files);
+            core.setOutput('commits', pr.commits);
+            core.setOutput('additions', pr.additions);
+            core.setOutput('deletions', pr.deletions);
+            core.setOutput('draft', pr.draft);
+            core.setOutput('title', pr.title);
+            core.setOutput('body', (pr.body || '').substring(0, 1000));
+
+      - name: Get CI check status
+        id: checks
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: checks } = await github.rest.checks.listForRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: '${{ steps.pr.outputs.head_sha }}'
+            });
+
+            const checkRuns = checks.check_runs.map(check => ({
+              name: check.name,
+              status: check.status,
+              conclusion: check.conclusion
+            }));
+
+            const total = checkRuns.length;
+            const successful = checkRuns.filter(c => c.conclusion === 'success').length;
+            const failed = checkRuns.filter(c => c.conclusion === 'failure').length;
+            const pending = checkRuns.filter(c => c.status !== 'completed').length;
+            const skipped = checkRuns.filter(c => c.conclusion === 'skipped').length;
+
+            const summary = {
+              total,
+              successful,
+              failed,
+              pending,
+              skipped,
+              all_passed: total > 0 && failed === 0 && pending === 0
+            };
+
+            core.setOutput('summary', JSON.stringify(summary));
+            core.setOutput('details', JSON.stringify(checkRuns));
+
+      - name: Get review status
+        id: reviews
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: reviews } = await github.rest.pulls.listReviews({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: ${{ steps.pr.outputs.number }}
+            });
+
+            // Get the most recent non-dismissed review from each reviewer
+            const latestReviews = {};
+            for (const review of reviews) {
+              if (review.state === 'DISMISSED') continue;
+              const reviewer = review.user.login;
+              latestReviews[reviewer] = review;
+            }
+
+            const states = Object.values(latestReviews).map(r => ({
+              user: r.user.login,
+              state: r.state
+            }));
+
+            const approved = states.filter(s => s.state === 'APPROVED').length;
+            const changesRequested = states.filter(s => s.state === 'CHANGES_REQUESTED').length;
+
+            const summary = {
+              total: states.length,
+              approved,
+              changes_requested: changesRequested,
+              has_approvals: approved > 0,
+              has_change_requests: changesRequested > 0,
+              reviewers: states
+            };
+
+            core.setOutput('summary', JSON.stringify(summary));
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Assess merge readiness
+        id: assess
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          MODEL: ${{ inputs.model }}
+          PR_TITLE: ${{ steps.pr.outputs.title }}
+          PR_BODY: ${{ steps.pr.outputs.body }}
+          PR_DRAFT: ${{ steps.pr.outputs.draft }}
+          PR_MERGEABLE: ${{ steps.pr.outputs.mergeable }}
+          PR_MERGEABLE_STATE: ${{ steps.pr.outputs.mergeable_state }}
+          PR_FILES_CHANGED: ${{ steps.pr.outputs.files_changed }}
+          PR_COMMITS: ${{ steps.pr.outputs.commits }}
+          PR_ADDITIONS: ${{ steps.pr.outputs.additions }}
+          PR_DELETIONS: ${{ steps.pr.outputs.deletions }}
+          CHECKS_SUMMARY: ${{ steps.checks.outputs.summary }}
+          CHECKS_DETAILS: ${{ steps.checks.outputs.details }}
+          REVIEWS_SUMMARY: ${{ steps.reviews.outputs.summary }}
+          CHECKER_NAME: ${{ inputs.checker_name }}
+        run: |
+          pip install anthropic
+          python << 'PYTHON_SCRIPT'
+          import anthropic
+          import os
+          import json
+          import re
+
+          client = anthropic.Anthropic()
+
+          pr_title = os.environ.get('PR_TITLE', '')
+          pr_body = os.environ.get('PR_BODY', '')
+          pr_draft = os.environ.get('PR_DRAFT', 'false') == 'true'
+          pr_mergeable = os.environ.get('PR_MERGEABLE', 'unknown')
+          pr_mergeable_state = os.environ.get('PR_MERGEABLE_STATE', 'unknown')
+          pr_files = os.environ.get('PR_FILES_CHANGED', '0')
+          pr_commits = os.environ.get('PR_COMMITS', '0')
+          pr_additions = os.environ.get('PR_ADDITIONS', '0')
+          pr_deletions = os.environ.get('PR_DELETIONS', '0')
+          checks_summary = json.loads(os.environ.get('CHECKS_SUMMARY', '{}'))
+          checks_details = json.loads(os.environ.get('CHECKS_DETAILS', '[]'))
+          reviews_summary = json.loads(os.environ.get('REVIEWS_SUMMARY', '{}'))
+          model = os.environ.get('MODEL', 'claude-opus-4-5-20251101')
+          checker_name = os.environ.get('CHECKER_NAME', 'Balin')
+
+          prompt = f"""You are {checker_name}, a merge readiness assessment agent. You are wise and practical,
+          providing clear assessments of whether a pull request is ready to merge.
+
+          ## PR Details
+          - **Title**: {pr_title}
+          - **Draft**: {pr_draft}
+          - **Files Changed**: {pr_files}
+          - **Commits**: {pr_commits}
+          - **Lines**: +{pr_additions} -{pr_deletions}
+          - **Mergeable**: {pr_mergeable}
+          - **Mergeable State**: {pr_mergeable_state}
+
+          ## CI Checks
+          {json.dumps(checks_summary, indent=2)}
+
+          Check details:
+          {json.dumps(checks_details[:15], indent=2)}
+
+          ## Reviews
+          {json.dumps(reviews_summary, indent=2)}
+
+          ## PR Description
+          {pr_body[:800]}
+
+          ## Task
+          Assess merge readiness. Consider:
+          1. Are all CI checks passing? (failed or pending = not ready)
+          2. Are there blocking reviews (changes requested)?
+          3. Is there at least one approval?
+          4. Are there merge conflicts? (mergeable=false or mergeable_state=dirty)
+          5. Is this a draft?
+
+          Respond with JSON:
+          {{
+            "ready": true or false,
+            "confidence": "high" | "medium" | "low",
+            "summary": "1-2 sentence assessment",
+            "checks": {{
+              "ci_passing": true/false,
+              "reviews_approved": true/false,
+              "no_merge_conflicts": true/false,
+              "not_draft": true/false,
+              "no_change_requests": true/false
+            }},
+            "blocking_issues": ["list of blockers, empty if ready"],
+            "warnings": ["non-blocking concerns, optional"]
+          }}
+
+          Be direct. If ready, say so. If not, say exactly what's blocking.
+          """
+
+          response = client.messages.create(
+              model=model,
+              max_tokens=2048,
+              messages=[{"role": "user", "content": prompt}]
+          )
+
+          result = response.content[0].text
+
+          try:
+              json_match = re.search(r'\{[\s\S]*\}', result)
+              if json_match:
+                  assessment = json.loads(json_match.group())
+              else:
+                  assessment = {"ready": False, "confidence": "low", "summary": "Could not parse assessment", "checks": {}, "blocking_issues": ["Assessment parsing failed"], "warnings": []}
+          except Exception as e:
+              print(f"Error parsing response: {e}")
+              assessment = {"ready": False, "confidence": "low", "summary": "Could not parse assessment", "checks": {}, "blocking_issues": ["Assessment parsing failed"], "warnings": []}
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f"ready={str(assessment.get('ready', False)).lower()}\n")
+              f.write(f"blocking_issues={len(assessment.get('blocking_issues', []))}\n")
+
+          with open('assessment_result.json', 'w') as f:
+              json.dump(assessment, f)
+
+          print(json.dumps(assessment, indent=2))
+          PYTHON_SCRIPT
+
+      - name: Generate app token
+        id: app-token
+        if: inputs.app_id != ''
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ inputs.app_id }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: Post assessment comment
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ steps.app-token.outputs.token || github.token }}
+          script: |
+            const fs = require('fs');
+            const assessment = JSON.parse(fs.readFileSync('assessment_result.json', 'utf8'));
+            const checkerName = '${{ inputs.checker_name }}';
+
+            const statusEmoji = assessment.ready ? '✅' : '⛔';
+            const confidenceEmoji = { high: '🔵', medium: '🟡', low: '🔴' }[assessment.confidence] || '⚪';
+
+            let body = `## ${statusEmoji} ${checkerName}'s Merge Readiness Assessment\n\n`;
+            body += `**Status:** ${assessment.ready ? 'Ready to merge' : 'Not ready'} (${confidenceEmoji} ${assessment.confidence} confidence)\n\n`;
+            body += `### Summary\n${assessment.summary}\n\n`;
+
+            body += `### Readiness Checklist\n`;
+            const checks = assessment.checks || {};
+            const checkItems = [
+              { key: 'ci_passing', label: 'All CI checks passing' },
+              { key: 'reviews_approved', label: 'Has approving reviews' },
+              { key: 'no_change_requests', label: 'No outstanding change requests' },
+              { key: 'no_merge_conflicts', label: 'No merge conflicts' },
+              { key: 'not_draft', label: 'Not a draft PR' }
+            ];
+
+            for (const item of checkItems) {
+              const passed = checks[item.key];
+              const status = passed === true ? '✅' : passed === false ? '❌' : '❓';
+              body += `- ${status} ${item.label}\n`;
+            }
+
+            if (assessment.blocking_issues && assessment.blocking_issues.length > 0) {
+              body += `\n### Blocking Issues\n`;
+              for (const issue of assessment.blocking_issues) {
+                body += `- ${issue}\n`;
+              }
+            }
+
+            if (assessment.warnings && assessment.warnings.length > 0) {
+              body += `\n### Warnings\n`;
+              for (const warning of assessment.warnings) {
+                body += `- ${warning}\n`;
+              }
+            }
+
+            body += `\n### Stats\n`;
+            body += `${assessment.ready ? 'All clear for merge.' : 'Resolve the blocking issues above before merging.'}\n`;
+            body += `| Files | Commits | Lines |\n|-------|---------|-------|\n`;
+            body += `| ${{ steps.pr.outputs.files_changed }} | ${{ steps.pr.outputs.commits }} | +${{ steps.pr.outputs.additions }} -${{ steps.pr.outputs.deletions }} |\n`;
+
+            const prUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/pull/${{ steps.pr.outputs.number }}`;
+            body += `\n---\n*Assessment by ${checkerName}*\n\n**PR:** ${prUrl}`;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: ${{ steps.pr.outputs.number }},
+              body: body
+            });
