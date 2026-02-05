@@ -89,7 +89,7 @@ jobs:
         with:
           ref: ${{ steps.pr.outputs.head_ref }}
           fetch-depth: 0
-          token: ${{ steps.app-token.outputs.token || secrets.PAT || github.token }}
+          token: ${{ secrets.PAT || steps.app-token.outputs.token || github.token }}
 
       - name: Update branch if behind base
         id: update-branch
