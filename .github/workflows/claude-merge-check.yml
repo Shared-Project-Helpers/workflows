@@ -113,46 +113,10 @@ jobs:
               status: 'in_progress',
               output: {
                 title: 'Assessing merge readiness...',
-                summary: 'Waiting for other checks to complete before assessment.'
+                summary: 'Checking current CI and review status.'
               }
             });
             core.setOutput('check_run_id', checkRun.id);
-
-      - name: Wait for other checks to complete
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const sha = '${{ steps.pr.outputs.head_sha }}';
-            const ownName = 'Merge Readiness Check';
-            const maxWaitMs = 30 * 60 * 1000; // 30 minutes
-            const pollIntervalMs = 30 * 1000;  // 30 seconds
-            const startTime = Date.now();
-
-            while (true) {
-              const { data: checks } = await github.rest.checks.listForRef({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                ref: sha
-              });
-
-              // Filter out our own check runs
-              const otherChecks = checks.check_runs.filter(c => !c.name.includes(ownName) && c.name !== 'Merge Readiness');
-              const incomplete = otherChecks.filter(c => c.status !== 'completed');
-
-              if (incomplete.length === 0 && otherChecks.length > 0) {
-                console.log(`All ${otherChecks.length} other checks have completed.`);
-                break;
-              }
-
-              const elapsed = Date.now() - startTime;
-              if (elapsed > maxWaitMs) {
-                console.log(`Timed out after 30 minutes. ${incomplete.length} checks still running.`);
-                break;
-              }
-
-              console.log(`Waiting for ${incomplete.length} check(s) to complete: ${incomplete.map(c => c.name).join(', ')}`);
-              await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
-            }
 
       - name: Get CI check status
         id: checks
