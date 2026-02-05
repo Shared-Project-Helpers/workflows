@@ -43,6 +43,26 @@ on:
         required: false
         default: ''
         type: string
+      trigger_fix_on_request_changes:
+        description: 'Trigger fix workflow when review requests changes'
+        required: false
+        default: 'true'
+        type: string
+      trigger_merge_check_on_approve:
+        description: 'Trigger merge check workflow when review approves'
+        required: false
+        default: 'true'
+        type: string
+      fix_workflow_id:
+        description: 'Fix workflow filename to dispatch'
+        required: false
+        default: 'claude-fix.yml'
+        type: string
+      merge_check_workflow_id:
+        description: 'Merge check workflow filename to dispatch'
+        required: false
+        default: 'claude-merge-check.yml'
+        type: string
     secrets:
       ANTHROPIC_API_KEY:
         required: true
@@ -53,6 +73,12 @@ on:
       decision:
         description: 'Review decision (APPROVE, REQUEST_CHANGES, or COMMENT)'
         value: ${{ jobs.review.outputs.decision }}
+      pr_number:
+        description: 'Pull request number'
+        value: ${{ jobs.review.outputs.pr_number }}
+      head_ref:
+        description: 'PR head branch ref'
+        value: ${{ jobs.review.outputs.head_ref }}
 
 jobs:
   review:
@@ -60,6 +86,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       decision: ${{ steps.review.outputs.decision }}
+      pr_number: ${{ steps.pr.outputs.number }}
+      head_ref: ${{ steps.pr.outputs.head_ref }}
 
     steps:
       - name: Checkout
@@ -75,10 +103,13 @@ jobs:
           script: |
             let prNumber, baseSha, headSha;
 
+            let headRef;
+
             if (context.eventName === 'pull_request' || context.eventName === 'pull_request_target') {
               prNumber = context.payload.pull_request.number;
               baseSha = context.payload.pull_request.base.sha;
               headSha = context.payload.pull_request.head.sha;
+              headRef = context.payload.pull_request.head.ref;
             } else {
               prNumber = context.payload.issue.number;
               const { data: pr } = await github.rest.pulls.get({
@@ -88,11 +119,13 @@ jobs:
               });
               baseSha = pr.base.sha;
               headSha = pr.head.sha;
+              headRef = pr.head.ref;
             }
 
             core.setOutput('number', prNumber);
             core.setOutput('base_sha', baseSha);
             core.setOutput('head_sha', headSha);
+            core.setOutput('head_ref', headRef);
 
       - name: Get diff
         id: diff
@@ -335,3 +368,43 @@ jobs:
                 console.log(`Could not merge PR: ${mergeError.message}`);
               }
             }
+
+  trigger-fix:
+    name: Trigger Fix Agent
+    needs: review
+    if: needs.review.outputs.decision == 'REQUEST_CHANGES' && inputs.trigger_fix_on_request_changes == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch fix workflow
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: '${{ inputs.fix_workflow_id }}',
+              ref: '${{ needs.review.outputs.head_ref }}',
+              inputs: {
+                pr_number: '${{ needs.review.outputs.pr_number }}'
+              }
+            });
+
+  trigger-merge-check:
+    name: Trigger Merge Check
+    needs: review
+    if: needs.review.outputs.decision == 'APPROVE' && inputs.trigger_merge_check_on_approve == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch merge check workflow
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: '${{ inputs.merge_check_workflow_id }}',
+              ref: 'main',
+              inputs: {
+                pr_number: '${{ needs.review.outputs.pr_number }}'
+              }
+            });

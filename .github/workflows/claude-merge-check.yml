@@ -22,6 +22,16 @@ on:
         required: false
         default: ''
         type: string
+      trigger_fix_on_behind:
+        description: 'Trigger fix workflow when branch is behind base'
+        required: false
+        default: 'true'
+        type: string
+      fix_workflow_id:
+        description: 'Fix workflow filename to dispatch for branch updates'
+        required: false
+        default: 'claude-fix.yml'
+        type: string
     secrets:
       ANTHROPIC_API_KEY:
         required: true
@@ -38,6 +48,9 @@ on:
       behind:
         description: 'Whether the PR branch is behind the base (true/false)'
         value: ${{ jobs.check.outputs.behind }}
+      head_ref:
+        description: 'PR head branch ref'
+        value: ${{ jobs.check.outputs.head_ref }}
 
 jobs:
   check:
@@ -47,6 +60,7 @@ jobs:
       ready: ${{ steps.assess.outputs.ready }}
       blocking_issues: ${{ steps.assess.outputs.blocking_issues }}
       behind: ${{ steps.pr.outputs.behind }}
+      head_ref: ${{ steps.pr.outputs.head_ref }}
 
     steps:
       - name: Get PR info
@@ -64,6 +78,7 @@ jobs:
 
             core.setOutput('number', prNumber);
             core.setOutput('head_sha', pr.head.sha);
+            core.setOutput('head_ref', pr.head.ref);
             core.setOutput('base_ref', pr.base.ref);
             core.setOutput('mergeable', pr.mergeable ?? 'unknown');
             core.setOutput('mergeable_state', pr.mergeable_state ?? 'unknown');
@@ -469,5 +484,25 @@ jobs:
               output: {
                 title: title,
                 summary: summary
+              }
+            });
+
+  trigger-branch-update:
+    name: Trigger Branch Update
+    needs: check
+    if: needs.check.outputs.behind == 'true' && inputs.trigger_fix_on_behind == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch fix workflow to update branch
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: '${{ inputs.fix_workflow_id }}',
+              ref: '${{ needs.check.outputs.head_ref }}',
+              inputs: {
+                pr_number: '${{ inputs.pr_number }}'
               }
             });
