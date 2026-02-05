@@ -487,13 +487,8 @@ jobs:
               }
             });
 
-  trigger-branch-update:
-    name: Trigger Branch Update
-    needs: check
-    if: needs.check.outputs.behind == 'true' && inputs.trigger_fix_on_behind == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Dispatch fix workflow to update branch
+      - name: Trigger fix workflow to update branch
+        if: steps.pr.outputs.behind == 'true' && inputs.trigger_fix_on_behind == 'true'
         uses: actions/github-script@v7
         with:
           script: |
@@ -501,7 +496,7 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               workflow_id: '${{ inputs.fix_workflow_id }}',
-              ref: '${{ needs.check.outputs.head_ref }}',
+              ref: '${{ steps.pr.outputs.head_ref }}',
               inputs: {
                 pr_number: '${{ inputs.pr_number }}'
               }

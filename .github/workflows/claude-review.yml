@@ -369,13 +369,8 @@ jobs:
               }
             }
 
-  trigger-fix:
-    name: Trigger Fix Agent
-    needs: review
-    if: needs.review.outputs.decision == 'REQUEST_CHANGES' && inputs.trigger_fix_on_request_changes == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Dispatch fix workflow
+      - name: Trigger fix workflow
+        if: steps.review.outputs.decision == 'REQUEST_CHANGES' && inputs.trigger_fix_on_request_changes == 'true'
         uses: actions/github-script@v7
         with:
           script: |
@@ -383,19 +378,14 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               workflow_id: '${{ inputs.fix_workflow_id }}',
-              ref: '${{ needs.review.outputs.head_ref }}',
+              ref: '${{ steps.pr.outputs.head_ref }}',
               inputs: {
-                pr_number: '${{ needs.review.outputs.pr_number }}'
+                pr_number: '${{ steps.pr.outputs.number }}'
               }
             });
 
-  trigger-merge-check:
-    name: Trigger Merge Check
-    needs: review
-    if: needs.review.outputs.decision == 'APPROVE' && inputs.trigger_merge_check_on_approve == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Dispatch merge check workflow
+      - name: Trigger merge check workflow
+        if: steps.review.outputs.decision == 'APPROVE' && inputs.trigger_merge_check_on_approve == 'true'
         uses: actions/github-script@v7
         with:
           script: |
@@ -405,6 +395,6 @@ jobs:
               workflow_id: '${{ inputs.merge_check_workflow_id }}',
               ref: 'main',
               inputs: {
-                pr_number: '${{ needs.review.outputs.pr_number }}'
+                pr_number: '${{ steps.pr.outputs.number }}'
               }
             });
