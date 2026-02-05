@@ -6,7 +6,7 @@ on:
       model:
         description: 'Claude model to use'
         required: false
-        default: 'claude-opus-4-5-20251101'
+        default: 'claude-opus-4-6'
         type: string
       pr_number:
         description: 'Pull request number to fix'
@@ -171,7 +171,7 @@ jobs:
 
           review_body = os.environ.get('REVIEW_BODY', '')
           diff = os.environ.get('PR_DIFF', '')
-          model = os.environ.get('MODEL', 'claude-sonnet-4-20250514')
+          model = os.environ.get('MODEL', 'claude-opus-4-6')
           max_tokens = int(os.environ.get('MAX_TOKENS', '8192'))
 
           prompt = f"""You are a senior developer fixing code review issues.
