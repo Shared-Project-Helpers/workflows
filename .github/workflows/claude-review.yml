@@ -130,10 +130,11 @@ jobs:
       - name: Get diff
         id: diff
         run: |
-          DIFF=$(git diff ${{ steps.pr.outputs.base_sha }}..${{ steps.pr.outputs.head_sha }} -- . ${{ inputs.excluded_files }})
-          echo "diff<<EOF" >> $GITHUB_OUTPUT
-          echo "$DIFF" | head -c ${{ inputs.diff_limit }} >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          DELIMITER="DIFF_$(openssl rand -hex 16)"
+          echo "diff<<${DELIMITER}" >> $GITHUB_OUTPUT
+          git diff ${{ steps.pr.outputs.base_sha }}..${{ steps.pr.outputs.head_sha }} -- . ${{ inputs.excluded_files }} | head -c ${{ inputs.diff_limit }} >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          echo "${DELIMITER}" >> $GITHUB_OUTPUT
 
       - name: Set up Python
         uses: actions/setup-python@v5
