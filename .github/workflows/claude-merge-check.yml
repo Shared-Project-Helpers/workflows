@@ -277,11 +277,18 @@ jobs:
           3. Are there merge conflicts? (mergeable=false or mergeable_state=dirty)
           4. Is this a draft?
 
+          ## IMPORTANT: Summary Requirements
+          Your summary MUST be a detailed explanation of:
+          - What specific checks you performed (CI status, review status, conflict status, draft status)
+          - The result of each check with specific details (e.g., "3/3 CI checks passed", "no human reviewers have requested changes")
+          - Your final conclusion and WHY the PR is or isn't ready to merge
+          This summary will be posted as a comment on the PR, so make it thorough and helpful.
+
           Respond with JSON:
           {{
             "ready": true or false,
             "confidence": "high" | "medium" | "low",
-            "summary": "1-2 sentence assessment",
+            "summary": "Detailed explanation of what was checked and why the PR is/isn't ready (3-5 sentences)",
             "checks": {{
               "ci_passing": true/false,
               "no_merge_conflicts": true/false,
@@ -292,7 +299,7 @@ jobs:
             "warnings": ["non-blocking concerns, optional"]
           }}
 
-          Be direct. If ready, say so. If not, say exactly what's blocking.
+          Be direct and thorough. Explain your reasoning for each check result.
           """
 
           response = client.messages.create(
@@ -376,8 +383,14 @@ jobs:
               }
             }
 
-            body += `\n### Stats\n`;
-            body += `${assessment.ready ? 'All clear for merge.' : 'Resolve the blocking issues above before merging.'}\n`;
+            body += `\n### Conclusion\n`;
+            if (assessment.ready) {
+              body += `**This PR is ready to merge.** All checks passed — CI is green, no merge conflicts, no outstanding human change requests, and the PR is not a draft.\n`;
+            } else {
+              body += `**This PR is not yet ready to merge.** Resolve the blocking issues listed above before merging.\n`;
+            }
+
+            body += `\n### PR Stats\n`;
             body += `| Files | Commits | Lines |\n|-------|---------|-------|\n`;
             body += `| ${{ steps.pr.outputs.files_changed }} | ${{ steps.pr.outputs.commits }} | +${{ steps.pr.outputs.additions }} -${{ steps.pr.outputs.deletions }} |\n`;
 

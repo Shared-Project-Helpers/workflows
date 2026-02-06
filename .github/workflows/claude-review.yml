@@ -63,6 +63,11 @@ on:
         required: false
         default: 'claude-merge-check.yml'
         type: string
+      create_tracked_issues:
+        description: 'Create GitHub Issues for non-blocking (tracked) concerns'
+        required: false
+        default: 'true'
+        type: string
     secrets:
       ANTHROPIC_API_KEY:
         required: true
@@ -168,32 +173,64 @@ jobs:
 
           prompt = f"""You are a senior code reviewer. Review this pull request diff and provide feedback.
 
-          ## Review Guidelines
-          - Focus on bugs, security issues, and logic errors
-          - Check for proper error handling
-          - Look for potential performance issues
-          - Check test coverage for new code
-          - Verify no secrets or credentials are committed
+          ## Review Scope — IMPORTANT
+
+          Your review is strictly limited to **implementation issues** — problems in the code as written.
+          You MUST categorize every issue into one of two categories:
+
+          ### BLOCKING issues (these prevent merging)
+          Only flag as blocking if the issue is a concrete implementation problem:
+          - Bugs, logic errors, off-by-one errors
+          - Security vulnerabilities (SQL injection, XSS, credential leaks, etc.)
+          - Race conditions or data corruption risks
+          - Missing error handling that will cause crashes
+          - Broken API contracts (wrong types, missing fields)
+          - Performance issues that will cause real problems (N+1 queries, unbounded memory)
+
+          ### TRACKED issues (noted but do NOT prevent merging)
+          These are valid observations but should be filed as GitHub Issues for future work:
+          - Architecture or design concerns
+          - Code duplication / DRY violations
+          - Missing tests (unless the untested code is clearly buggy)
+          - Refactoring suggestions
+          - Documentation gaps
+          - Migration tooling or deployment concerns
+          - Style or convention preferences
+          - "Nice to have" improvements
           {extra_section}
+
+          ## Decision Rules
+          - **APPROVE** if there are zero blocking issues (even if there are tracked issues)
+          - **REQUEST_CHANGES** only if there are one or more blocking issues
 
           ## Response Format
           Respond with a JSON object:
           {{
-            "decision": "APPROVE" | "REQUEST_CHANGES" | "COMMENT",
+            "decision": "APPROVE" | "REQUEST_CHANGES",
             "summary": "Brief summary of the review",
-            "issues": [
+            "blocking_issues": [
               {{
-                "severity": "critical" | "major" | "minor" | "suggestion",
+                "severity": "critical" | "major",
                 "file": "path/to/file",
                 "line": 42,
-                "description": "Description of the issue",
+                "description": "Description of the implementation problem",
                 "suggestion": "How to fix it"
+              }}
+            ],
+            "tracked_issues": [
+              {{
+                "severity": "minor" | "suggestion",
+                "title": "Short issue title for GitHub Issue",
+                "file": "path/to/file",
+                "line": 42,
+                "description": "Description of the concern",
+                "suggestion": "Recommended approach for future work"
               }}
             ]
           }}
 
-          If there are no significant issues, set decision to "APPROVE".
-          Only use "REQUEST_CHANGES" for critical or major issues.
+          Remember: APPROVE when there are no blocking issues. Tracked issues will be
+          automatically filed as GitHub Issues — they do NOT block the merge.
 
           ## Diff
           ```diff
@@ -215,14 +252,32 @@ jobs:
               if json_match:
                   review_data = json.loads(json_match.group())
               else:
-                  review_data = {"decision": "COMMENT", "summary": result, "issues": []}
+                  review_data = {"decision": "APPROVE", "summary": result, "blocking_issues": [], "tracked_issues": []}
           except:
-              review_data = {"decision": "COMMENT", "summary": result, "issues": []}
+              review_data = {"decision": "APPROVE", "summary": result, "blocking_issues": [], "tracked_issues": []}
+
+          # Normalize: ensure both issue lists exist
+          review_data.setdefault('blocking_issues', [])
+          review_data.setdefault('tracked_issues', [])
+
+          # Also support legacy 'issues' key — migrate to tracked
+          if 'issues' in review_data and not review_data['blocking_issues'] and not review_data['tracked_issues']:
+              for issue in review_data.get('issues', []):
+                  if issue.get('severity') in ('critical', 'major'):
+                      review_data['blocking_issues'].append(issue)
+                  else:
+                      review_data['tracked_issues'].append(issue)
+
+          # Enforce decision rules: only REQUEST_CHANGES if there are blocking issues
+          if not review_data['blocking_issues']:
+              review_data['decision'] = 'APPROVE'
 
           # Write outputs
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
-              f.write(f"decision={review_data.get('decision', 'COMMENT')}\n")
+              f.write(f"decision={review_data.get('decision', 'APPROVE')}\n")
               f.write(f"summary={review_data.get('summary', 'Review completed')[:500]}\n")
+              f.write(f"tracked_count={len(review_data.get('tracked_issues', []))}\n")
+              f.write(f"blocking_count={len(review_data.get('blocking_issues', []))}\n")
 
           with open('review_result.json', 'w') as f:
               json.dump(review_data, f)
@@ -247,21 +302,23 @@ jobs:
             const reviewData = JSON.parse(fs.readFileSync('review_result.json', 'utf8'));
 
             const reviewerName = '${{ inputs.reviewer_name }}';
+            const decision = reviewData.decision;
+            const blockingIssues = reviewData.blocking_issues || [];
+            const trackedIssues = reviewData.tracked_issues || [];
+
             let body = `## ${reviewerName}'s Code Review\n\n`;
-            body += `**Decision:** ${reviewData.decision}\n\n`;
+            body += `**Decision:** ${decision}`;
+            if (decision === 'APPROVE' && trackedIssues.length > 0) {
+              body += ` (${trackedIssues.length} non-blocking concern${trackedIssues.length === 1 ? '' : 's'} filed as Issues)`;
+            }
+            body += `\n\n`;
             body += `### Summary\n${reviewData.summary}\n\n`;
 
-            if (reviewData.issues && reviewData.issues.length > 0) {
-              body += `### Issues Found\n\n`;
-              for (const issue of reviewData.issues) {
-                const emoji = {
-                  critical: '🔴',
-                  major: '🟠',
-                  minor: '🟡',
-                  suggestion: '💡'
-                }[issue.severity] || '📝';
-
-                body += `${emoji} **${issue.severity.toUpperCase()}** `;
+            if (blockingIssues.length > 0) {
+              body += `### Blocking Issues (must fix before merge)\n\n`;
+              for (const issue of blockingIssues) {
+                const emoji = issue.severity === 'critical' ? '\u{1F534}' : '\u{1F7E0}';
+                body += `${emoji} **${(issue.severity || 'major').toUpperCase()}** `;
                 if (issue.file) body += `in \`${issue.file}\``;
                 if (issue.line) body += ` (line ${issue.line})`;
                 body += `\n`;
@@ -271,6 +328,24 @@ jobs:
                 }
                 body += `\n`;
               }
+            }
+
+            if (trackedIssues.length > 0) {
+              body += `### Tracked Issues (filed as GitHub Issues)\n\n`;
+              body += `These concerns have been filed as GitHub Issues for future work and do not block this PR.\n\n`;
+              for (const issue of trackedIssues) {
+                const emoji = issue.severity === 'minor' ? '\u{1F7E1}' : '\u{1F4A1}';
+                body += `${emoji} **${(issue.severity || 'suggestion').toUpperCase()}** `;
+                if (issue.title) body += `— ${issue.title} `;
+                if (issue.file) body += `in \`${issue.file}\``;
+                if (issue.line) body += ` (line ${issue.line})`;
+                body += `\n`;
+                body += `> ${issue.description}\n\n`;
+              }
+            }
+
+            if (blockingIssues.length === 0 && trackedIssues.length === 0) {
+              body += `No issues found. Code looks good!\n\n`;
             }
 
             const prUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/pull/${{ steps.pr.outputs.number }}`;
@@ -284,19 +359,79 @@ jobs:
               body: body
             });
 
-            // Submit formal review if approving or requesting changes
-            if (reviewData.decision === 'APPROVE' || reviewData.decision === 'REQUEST_CHANGES') {
+            // Submit formal review
+            if (decision === 'APPROVE' || decision === 'REQUEST_CHANGES') {
               try {
                 await github.rest.pulls.createReview({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   pull_number: ${{ steps.pr.outputs.number }},
-                  event: reviewData.decision,
+                  event: decision,
                   body: reviewData.summary
                 });
               } catch (error) {
                 console.log(`Note: Could not submit formal review (${error.message}). The review comment was posted successfully.`);
               }
+            }
+
+      - name: Create GitHub Issues for tracked concerns
+        if: steps.review.outputs.tracked_count != '0' && inputs.create_tracked_issues == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ steps.app-token.outputs.token || github.token }}
+          script: |
+            const fs = require('fs');
+            const reviewData = JSON.parse(fs.readFileSync('review_result.json', 'utf8'));
+            const trackedIssues = reviewData.tracked_issues || [];
+            const prNumber = ${{ steps.pr.outputs.number }};
+            const reviewerName = '${{ inputs.reviewer_name }}';
+
+            const createdIssues = [];
+
+            for (const issue of trackedIssues) {
+              const title = issue.title || issue.description.substring(0, 80);
+              let issueBody = `## Code Review Finding\n\n`;
+              issueBody += `Identified during review of PR #${prNumber}.\n\n`;
+              issueBody += `**Severity:** ${issue.severity || 'suggestion'}\n`;
+              if (issue.file) issueBody += `**File:** \`${issue.file}\``;
+              if (issue.line) issueBody += ` (line ${issue.line})`;
+              if (issue.file) issueBody += `\n`;
+              issueBody += `\n### Description\n${issue.description}\n`;
+              if (issue.suggestion) {
+                issueBody += `\n### Suggested Approach\n${issue.suggestion}\n`;
+              }
+              issueBody += `\n---\n*Filed automatically by ${reviewerName} code review from PR #${prNumber}*`;
+
+              try {
+                const { data: created } = await github.rest.issues.create({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  title: `[Review] ${title}`,
+                  body: issueBody,
+                  labels: ['code-review', 'tracked']
+                });
+                createdIssues.push({ number: created.number, title: created.title });
+                console.log(`Created issue #${created.number}: ${created.title}`);
+              } catch (error) {
+                console.log(`Failed to create issue for: ${title} — ${error.message}`);
+              }
+            }
+
+            // Post a summary comment linking to the created issues
+            if (createdIssues.length > 0) {
+              let body = `### Tracked Issues Created\n\n`;
+              body += `The following GitHub Issues were created for non-blocking concerns from this review:\n\n`;
+              for (const issue of createdIssues) {
+                body += `- #${issue.number}: ${issue.title}\n`;
+              }
+              body += `\nThese do not block merging this PR.\n`;
+
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body: body
+              });
             }
 
       - name: Auto-merge if approved and labeled
@@ -352,7 +487,7 @@ jobs:
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: prNumber,
-                body: `🤖 **Auto-merge enabled.** This PR will be merged automatically when all required checks pass.`
+                body: `\u{1F916} **Auto-merge enabled.** This PR will be merged automatically when all required checks pass.`
               });
             } catch (error) {
               console.log(`Could not enable auto-merge: ${error.message}`);
