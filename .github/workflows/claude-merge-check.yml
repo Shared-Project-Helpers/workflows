@@ -278,17 +278,23 @@ jobs:
           4. Is this a draft?
 
           ## IMPORTANT: Summary Requirements
-          Your summary MUST be a detailed explanation of:
-          - What specific checks you performed (CI status, review status, conflict status, draft status)
-          - The result of each check with specific details (e.g., "3/3 CI checks passed", "no human reviewers have requested changes")
-          - Your final conclusion and WHY the PR is or isn't ready to merge
-          This summary will be posted as a comment on the PR, so make it thorough and helpful.
+          Your summary MUST be a bullet-point list, one bullet per check performed.
+          Each bullet should state the check name, its result, and a brief detail. For example:
+          - **CI Status:** PASS — 5/5 checks succeeded, 1 skipped (Apple Client)
+          - **Merge Conflicts:** PASS — no conflicts detected (mergeable=true)
+          - **Draft Status:** PASS — PR is not a draft
+          - **Change Requests:** PASS — no human reviewers have requested changes
+          - **Conclusion:** Ready to merge — all gates passed
+
+          Use this exact bullet format. Do NOT write paragraphs. End with a Conclusion bullet
+          that states whether the PR is ready and why.
+          This summary will be posted as a comment on the PR, so make it clear and scannable.
 
           Respond with JSON:
           {{
             "ready": true or false,
             "confidence": "high" | "medium" | "low",
-            "summary": "Detailed explanation of what was checked and why the PR is/isn't ready (3-5 sentences)",
+            "summary": "Bullet-point list of checks and conclusion (use markdown bullet format with - prefix)",
             "checks": {{
               "ci_passing": true/false,
               "no_merge_conflicts": true/false,
