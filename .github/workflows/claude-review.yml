@@ -272,10 +272,13 @@ jobs:
           if not review_data['blocking_issues']:
               review_data['decision'] = 'APPROVE'
 
-          # Write outputs
+          # Write outputs — summary must be single-line for GITHUB_OUTPUT key=value format
+          summary = review_data.get('summary', 'Review completed')
+          summary = re.sub(r'\s+', ' ', summary).strip()[:500]
+
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
               f.write(f"decision={review_data.get('decision', 'APPROVE')}\n")
-              f.write(f"summary={review_data.get('summary', 'Review completed')[:500]}\n")
+              f.write(f"summary={summary}\n")
               f.write(f"tracked_count={len(review_data.get('tracked_issues', []))}\n")
               f.write(f"blocking_count={len(review_data.get('blocking_issues', []))}\n")
 
