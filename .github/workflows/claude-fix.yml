@@ -140,10 +140,11 @@ jobs:
       - name: Get diff for context
         id: diff
         run: |
-          DIFF=$(git diff ${{ steps.pr.outputs.base_sha }}..HEAD -- . ':!*.lock' ':!package-lock.json')
-          echo "diff<<EOF" >> $GITHUB_OUTPUT
-          echo "$DIFF" | head -c 30000 >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          DELIMITER="DIFF_$(openssl rand -hex 8)"
+          echo "diff<<${DELIMITER}" >> $GITHUB_OUTPUT
+          git diff ${{ steps.pr.outputs.base_sha }}..HEAD -- . ':!*.lock' ':!package-lock.json' | head -c 30000 >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          echo "${DELIMITER}" >> $GITHUB_OUTPUT
 
       - name: Set up Python
         uses: actions/setup-python@v5
