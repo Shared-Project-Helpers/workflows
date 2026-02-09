@@ -1,0 +1,459 @@
+name: Claude Issue Fix Agent
+
+on:
+  workflow_call:
+    inputs:
+      model:
+        description: 'Claude model to use'
+        required: false
+        default: 'claude-opus-4-6'
+        type: string
+      pr_number:
+        description: 'Pull request number to fix'
+        required: true
+        type: string
+      max_tokens:
+        description: 'Max tokens for fix response'
+        required: false
+        default: '8192'
+        type: string
+      commit_author_name:
+        description: 'Git author name for fix commits'
+        required: false
+        default: 'Nori'
+        type: string
+      commit_author_email:
+        description: 'Git author email for fix commits'
+        required: false
+        default: 'nori@users.noreply.github.com'
+        type: string
+      fixer_name:
+        description: 'Display name for the fix agent persona'
+        required: false
+        default: 'Nori'
+        type: string
+      app_id:
+        description: 'GitHub App ID for custom bot identity (leave empty to use github-actions[bot])'
+        required: false
+        default: ''
+        type: string
+      create_issues_for_deferred:
+        description: 'Create GitHub Issues for deferred items that cannot be fixed in-PR'
+        required: false
+        default: 'true'
+        type: string
+      issue_labels:
+        description: 'Comma-separated labels to apply to created issues'
+        required: false
+        default: 'deferred,review-feedback'
+        type: string
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: true
+      PAT:
+        required: false
+        description: 'Personal Access Token for pushing (enables workflow triggers)'
+      APP_PRIVATE_KEY:
+        required: false
+        description: 'GitHub App private key for custom bot identity'
+    outputs:
+      files_changed:
+        description: 'Number of files changed'
+        value: ${{ jobs.fix.outputs.files_changed }}
+      fixes_applied:
+        description: 'Number of fixes successfully applied'
+        value: ${{ jobs.fix.outputs.fixes_applied }}
+      fixes_deferred:
+        description: 'Number of issues deferred to GitHub Issues'
+        value: ${{ jobs.fix.outputs.fixes_deferred }}
+      issues_created:
+        description: 'Number of GitHub Issues created'
+        value: ${{ jobs.fix.outputs.issues_created }}
+
+concurrency:
+  group: nori-fix-${{ inputs.pr_number }}
+  cancel-in-progress: false
+
+jobs:
+  fix:
+    name: Apply Fixes & Create Issues
+    runs-on: ubuntu-latest
+    outputs:
+      files_changed: ${{ steps.fix.outputs.files_changed }}
+      fixes_applied: ${{ steps.fix.outputs.fixes_applied }}
+      fixes_deferred: ${{ steps.fix.outputs.fixes_deferred }}
+      issues_created: ${{ steps.create-issues.outputs.issues_created }}
+
+    steps:
+      - name: Get PR info
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = ${{ inputs.pr_number }};
+
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber
+            });
+
+            core.setOutput('number', prNumber);
+            core.setOutput('head_ref', pr.head.ref);
+            core.setOutput('base_sha', pr.base.sha);
+
+      - name: Generate app token
+        id: app-token
+        if: inputs.app_id != ''
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ inputs.app_id }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pr.outputs.head_ref }}
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token || secrets.PAT || github.token }}
+
+      - name: Update branch if behind base
+        id: update-branch
+        run: |
+          git config user.name "${{ inputs.commit_author_name }}"
+          git config user.email "${{ inputs.commit_author_email }}"
+
+          BASE_BRANCH=$(gh pr view ${{ steps.pr.outputs.number }} --json baseRefName --jq .baseRefName)
+          git fetch origin "$BASE_BRANCH"
+
+          BEHIND=$(git rev-list --count HEAD..origin/"$BASE_BRANCH")
+          echo "behind=$BEHIND" >> $GITHUB_OUTPUT
+
+          if [ "$BEHIND" -gt 0 ]; then
+            echo "Branch is $BEHIND commit(s) behind $BASE_BRANCH. Merging..."
+            git merge origin/"$BASE_BRANCH" --no-edit
+            echo "merged=true" >> $GITHUB_OUTPUT
+          else
+            echo "Branch is up to date with $BASE_BRANCH."
+            echo "merged=false" >> $GITHUB_OUTPUT
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Get ALL review comments
+        id: comments
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: ${{ steps.pr.outputs.number }}
+            });
+
+            // Collect feedback from ALL reviewers (Thorin, Dwalin, Oin)
+            const reviewKeywords = ['Code Review', 'Performance Review', 'Safety & Privacy Review'];
+            const reviewComments = comments.filter(c =>
+              reviewKeywords.some(keyword => c.body.includes(keyword))
+            );
+
+            // Get the most recent comment from each reviewer type
+            const latestByType = {};
+            for (const comment of reviewComments) {
+              for (const keyword of reviewKeywords) {
+                if (comment.body.includes(keyword)) {
+                  latestByType[keyword] = comment.body;
+                }
+              }
+            }
+
+            const allFeedback = Object.entries(latestByType)
+              .map(([type, body]) => `### ${type}\n${body}`)
+              .join('\n\n---\n\n');
+
+            core.setOutput('review_body', allFeedback || 'No review found');
+
+      - name: Get diff for context
+        id: diff
+        run: |
+          DIFF=$(git diff ${{ steps.pr.outputs.base_sha }}..HEAD -- . ':!*.lock' ':!package-lock.json')
+          echo "diff<<EOF" >> $GITHUB_OUTPUT
+          echo "$DIFF" | head -c 30000 >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Apply fixes with Claude
+        id: fix
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          REVIEW_BODY: ${{ steps.comments.outputs.review_body }}
+          PR_DIFF: ${{ steps.diff.outputs.diff }}
+          MODEL: ${{ inputs.model }}
+          MAX_TOKENS: ${{ inputs.max_tokens }}
+          FIXER_NAME: ${{ inputs.fixer_name }}
+        run: |
+          pip install anthropic
+          python << 'PYTHON_SCRIPT'
+          import anthropic
+          import os
+          import json
+          import re
+
+          client = anthropic.Anthropic()
+
+          review_body = os.environ.get('REVIEW_BODY', '')
+          diff = os.environ.get('PR_DIFF', '')
+          model = os.environ.get('MODEL', 'claude-opus-4-6')
+          max_tokens = int(os.environ.get('MAX_TOKENS', '8192'))
+
+          prompt = f"""You are Nori, a senior developer who fixes code review issues from multiple reviewers.
+
+          You have feedback from up to three specialized reviewers:
+          - **Thorin** (general code quality, bugs, logic)
+          - **Dwalin** (performance, efficiency, cost)
+          - **Oin** (security, privacy, safety)
+
+          ## All Review Feedback
+          {review_body}
+
+          ## Current Diff
+          ```diff
+          {diff[:25000]}
+          ```
+
+          ## Instructions
+          1. Analyze ALL review feedback from all reviewers
+          2. Prioritize fixes in this order:
+             a. Critical security issues (Oin) — fix immediately
+             b. Critical performance issues (Dwalin) — fix immediately
+             c. Critical quality issues (Thorin) — fix immediately
+             d. Major issues in same priority order
+             e. Minor issues if straightforward
+          3. For issues that CANNOT be fixed within this PR (too complex, requires architectural changes, needs discussion), add them to the "deferred" array
+
+          Respond with a JSON object:
+          {{
+            "fixes": [
+              {{
+                "file": "path/to/file",
+                "description": "What this fix does",
+                "reviewer": "Thorin | Dwalin | Oin",
+                "severity": "critical | major | minor",
+                "search": "exact code to find (multiple lines ok)",
+                "replace": "exact replacement code"
+              }}
+            ],
+            "deferred": [
+              {{
+                "title": "Short issue title",
+                "description": "Detailed description of what needs to be done",
+                "reviewer": "Thorin | Dwalin | Oin",
+                "severity": "critical | major | minor",
+                "category": "Category of the issue"
+              }}
+            ],
+            "commit_message": "fix: brief single-line description"
+          }}
+
+          IMPORTANT:
+          - The commit_message MUST be a single line (no newlines)
+          - The "search" field must match EXACTLY what's in the file (including whitespace)
+          - Keep fixes minimal and focused on the review feedback
+          - Do not make unrelated changes
+          - If no fixes are needed, return {{"fixes": [], "deferred": [], "commit_message": ""}}
+          """
+
+          response = client.messages.create(
+              model=model,
+              max_tokens=max_tokens,
+              messages=[{"role": "user", "content": prompt}]
+          )
+
+          result = response.content[0].text
+
+          try:
+              json_match = re.search(r'\{[\s\S]*\}', result)
+              if json_match:
+                  fix_data = json.loads(json_match.group())
+              else:
+                  fix_data = {"fixes": [], "deferred": [], "commit_message": ""}
+          except Exception as e:
+              print(f"Error parsing response: {e}")
+              fix_data = {"fixes": [], "deferred": [], "commit_message": ""}
+
+          # Apply fixes
+          files_changed = []
+          fixes_applied = 0
+          for fix in fix_data.get('fixes', []):
+              file_path = fix.get('file', '')
+              search = fix.get('search', '')
+              replace = fix.get('replace', '')
+
+              if not file_path or not search:
+                  continue
+
+              try:
+                  with open(file_path, 'r') as f:
+                      content = f.read()
+
+                  if search in content:
+                      new_content = content.replace(search, replace, 1)
+                      with open(file_path, 'w') as f:
+                          f.write(new_content)
+                      files_changed.append(file_path)
+                      fixes_applied += 1
+                      reviewer = fix.get('reviewer', 'unknown')
+                      print(f"✓ Fixed ({reviewer}): {file_path} - {fix.get('description', '')}")
+                  else:
+                      print(f"✗ Could not find match in {file_path}")
+              except Exception as e:
+                  print(f"✗ Error fixing {file_path}: {e}")
+
+          # Write deferred items for issue creation
+          deferred = fix_data.get('deferred', [])
+          with open('deferred_items.json', 'w') as f:
+              json.dump(deferred, f)
+
+          # Write outputs
+          commit_msg = fix_data.get('commit_message', 'fix: apply review feedback')
+          commit_msg = commit_msg.replace('\n', ' ').replace('\r', '').strip()[:200]
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f"files_changed={len(set(files_changed))}\n")
+              f.write(f"fixes_applied={fixes_applied}\n")
+              f.write(f"fixes_deferred={len(deferred)}\n")
+              f.write(f"commit_message={commit_msg}\n")
+
+          print(f"\nFixes applied: {fixes_applied}")
+          print(f"Files changed: {len(set(files_changed))}")
+          print(f"Items deferred: {len(deferred)}")
+          PYTHON_SCRIPT
+
+      - name: Commit and push fixes
+        if: steps.fix.outputs.files_changed != '0' || steps.update-branch.outputs.merged == 'true'
+        run: |
+          git config user.name "${{ inputs.commit_author_name }}"
+          git config user.email "${{ inputs.commit_author_email }}"
+
+          # Commit code fixes if any
+          if [ "${{ steps.fix.outputs.files_changed }}" != "0" ]; then
+            git add -A
+            git commit -m "${{ steps.fix.outputs.commit_message }}
+
+          Co-Authored-By: Claude <noreply@anthropic.com>"
+          fi
+
+          # Push (includes merge commit and/or fix commit)
+          git push origin ${{ steps.pr.outputs.head_ref }}
+
+      - name: Create GitHub Issues for deferred items
+        id: create-issues
+        if: inputs.create_issues_for_deferred == 'true' && steps.fix.outputs.fixes_deferred != '0'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ steps.app-token.outputs.token || github.token }}
+          script: |
+            const fs = require('fs');
+            const deferred = JSON.parse(fs.readFileSync('deferred_items.json', 'utf8'));
+            const prNumber = ${{ steps.pr.outputs.number }};
+            const prUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/pull/${prNumber}`;
+            const fixerName = '${{ inputs.fixer_name }}';
+            const labelsStr = '${{ inputs.issue_labels }}';
+            const labels = labelsStr.split(',').map(l => l.trim()).filter(Boolean);
+
+            let issuesCreated = 0;
+
+            for (const item of deferred) {
+              try {
+                const severityEmoji = {
+                  critical: '🔴',
+                  major: '🟠',
+                  minor: '🟡'
+                }[item.severity] || '📝';
+
+                const body = [
+                  `## ${severityEmoji} ${item.severity?.toUpperCase() || 'UNKNOWN'} — ${item.category || 'General'}`,
+                  '',
+                  item.description,
+                  '',
+                  `**Reviewer:** ${item.reviewer || 'Unknown'}`,
+                  `**Source PR:** ${prUrl}`,
+                  `**Created by:** ${fixerName} (automated)`,
+                  '',
+                  '---',
+                  `*This issue was created automatically by ${fixerName} from review feedback that could not be addressed within the PR scope.*`
+                ].join('\n');
+
+                await github.rest.issues.create({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  title: item.title || 'Review feedback: deferred item',
+                  body: body,
+                  labels: labels
+                });
+
+                issuesCreated++;
+                console.log(`Created issue: ${item.title}`);
+              } catch (error) {
+                console.log(`Failed to create issue: ${error.message}`);
+              }
+            }
+
+            core.setOutput('issues_created', issuesCreated);
+
+      - name: Comment on PR
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ steps.app-token.outputs.token || github.token }}
+          script: |
+            const filesChanged = parseInt('${{ steps.fix.outputs.files_changed }}') || 0;
+            const fixesApplied = parseInt('${{ steps.fix.outputs.fixes_applied }}') || 0;
+            const fixesDeferred = parseInt('${{ steps.fix.outputs.fixes_deferred }}') || 0;
+            const issuesCreated = parseInt('${{ steps.create-issues.outputs.issues_created }}') || 0;
+            const branchMerged = '${{ steps.update-branch.outputs.merged }}' === 'true';
+            const behindCount = '${{ steps.update-branch.outputs.behind }}';
+            const prUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/pull/${{ steps.pr.outputs.number }}`;
+            const fixerName = '${{ inputs.fixer_name }}';
+
+            let body = `## ${fixerName}\n\n`;
+
+            // Branch update section
+            if (branchMerged) {
+              body += `**Branch updated:** Merged ${behindCount} commit(s) from the base branch.\n\n`;
+            }
+
+            // Fixes section
+            if (fixesApplied > 0) {
+              body += `**Fixes applied:** ${fixesApplied} fix(es) across ${filesChanged} file(s) based on review feedback.\n\n`;
+              body += `**Commit:** \`${{ steps.fix.outputs.commit_message }}\`\n\n`;
+            }
+
+            // Deferred items section
+            if (fixesDeferred > 0) {
+              body += `**Deferred items:** ${fixesDeferred} issue(s) could not be fixed within this PR scope.\n`;
+              if (issuesCreated > 0) {
+                body += `**GitHub Issues created:** ${issuesCreated} tracking issue(s) filed for follow-up.\n\n`;
+              }
+            }
+
+            if (fixesApplied > 0 || branchMerged) {
+              body += `The review agents will run again automatically to verify.\n`;
+            } else if (fixesDeferred > 0) {
+              body += `No automatic fixes could be applied in this PR. Issues have been filed for follow-up.\n`;
+            } else {
+              body += `No automatic fixes could be applied. The issues may require manual intervention.\n\n`;
+              body += `Please review the feedback and make changes manually, or comment \`@nori\` with more specific instructions.\n`;
+            }
+
+            body += `\n---\n*${fixerName}*\n\n**PR:** ${prUrl}`;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: ${{ steps.pr.outputs.number }},
+              body: body
+            });

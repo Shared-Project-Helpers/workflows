@@ -4,9 +4,12 @@ Reusable GitHub Actions workflows for Claude-powered CI/CD automation (code revi
 
 ## Project structure
 
-- `.github/workflows/claude-review.yml` — Automated PR code review using Claude
-- `.github/workflows/claude-fix.yml` — Applies fixes based on review feedback
-- `.github/workflows/claude-merge-check.yml` — "Balin" merge readiness assessment
+- `.github/workflows/claude-review.yml` — "Thorin" automated PR code review
+- `.github/workflows/claude-perf-review.yml` — "Dwalin" performance review
+- `.github/workflows/claude-safety-review.yml` — "Oin" safety & privacy review (with Semgrep + GitLeaks)
+- `.github/workflows/claude-fix.yml` — "Gloin" applies fixes from Thorin's feedback
+- `.github/workflows/claude-issue-fix.yml` — "Nori" applies fixes from all reviewers, creates GitHub Issues for deferred items
+- `.github/workflows/claude-merge-check.yml` — "Balin" merge readiness assessment (supports required reviewer approvals)
 - `README.md` — Usage docs and configuration reference
 
 ## Tech stack
