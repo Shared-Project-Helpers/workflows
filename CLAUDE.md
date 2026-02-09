@@ -11,6 +11,7 @@ Reusable GitHub Actions workflows for Claude-powered CI/CD automation (code revi
 - `.github/workflows/claude-fix.yml` — Fix Agent: applies fixes from General Reviewer's feedback
 - `.github/workflows/claude-issue-fix.yml` — Issue Fix Agent: applies fixes from all reviewers, creates GitHub Issues for deferred items
 - `.github/workflows/claude-merge-check.yml` — Merge Checker: merge readiness assessment (supports required reviewer approvals)
+- `.github/workflows/claude-test-runner.yml` — Test Runner: autonomous test generation, execution, and iteration
 - `README.md` — Usage docs and configuration reference
 
 ## Tech stack

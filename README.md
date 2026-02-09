@@ -13,6 +13,7 @@ Reusable GitHub Actions workflows for Claude-powered code review, automated fixe
 | **Fix Agent** — Fix General Reviewer's feedback | `claude-fix.yml` | Dispatched by General Reviewer, `@fix` |
 | **Issue Fix Agent** — Fix all reviewers' feedback, create issues | `claude-issue-fix.yml` | Dispatched by other reviewers, `@issue-fix` |
 | **Merge Checker** — Merge gate, verifies all approvals | `claude-merge-check.yml` | Dispatched by General Reviewer, `@merge-check` |
+| **Test Runner** — Autonomous test generation & execution | `claude-test-runner.yml` | Scheduled, manual dispatch, `@test-runner` |
 
 ## Pipeline Flow
 
@@ -369,6 +370,88 @@ jobs:
 
 ---
 
+### Test Runner (`claude-test-runner.yml`)
+
+Autonomously generates tests, runs them, iterates on failures, and manages PRs. Two modes:
+- **Standalone**: Creates a new branch, generates tests, opens a PR. Closes stale test-runner PRs.
+- **PR mode**: Pushes tests directly to an existing PR branch (triggered by `@test-runner` comment).
+
+**Usage:**
+
+```yaml
+name: Test Runner
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * 1'  # Weekly Monday 6am UTC
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  test-runner-standalone:
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'schedule'
+    uses: Shared-Project-Helpers/workflows/.github/workflows/claude-test-runner.yml@main
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    with:
+      mode: 'standalone'
+      test_command: './gradlew test'
+      source_paths: 'src/main'
+      test_paths: 'src/test'
+      setup_java: '17'
+
+  test-runner-pr:
+    if: |
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request &&
+      contains(github.event.comment.body, '@test-runner')
+    uses: Shared-Project-Helpers/workflows/.github/workflows/claude-test-runner.yml@main
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    with:
+      mode: 'pr'
+      pr_number: ${{ github.event.issue.number }}
+      test_command: './gradlew test'
+      source_paths: 'src/main'
+      test_paths: 'src/test'
+      setup_java: '17'
+```
+
+**Inputs:**
+
+| Input | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `mode` | No | `standalone` | `standalone` (create branch + PR) or `pr` (push to existing PR) |
+| `pr_number` | No | `''` | Target PR number (required for `pr` mode) |
+| `model` | No | `claude-sonnet-4-5-20250929` | Claude model to use |
+| `max_iterations` | No | `3` | Max generate/fix loop iterations |
+| `test_command` | Yes | - | Command to run tests |
+| `source_paths` | No | `src` | Space-separated paths to scan for source code |
+| `test_paths` | No | `src` | Space-separated paths for test output |
+| `test_guidelines` | No | `''` | Project-specific test writing guidelines |
+| `setup_java` | No | `''` | Java version (empty to skip) |
+| `setup_node` | No | `''` | Node.js version (empty to skip) |
+| `runner_name` | No | `Test Runner` | Display name for the persona |
+| `commit_author_name` | No | `Test Runner` | Git author name |
+| `commit_author_email` | No | `test-runner@users.noreply.github.com` | Git author email |
+| `branch_prefix` | No | `test-runner` | Branch prefix for standalone mode |
+| `close_stale_prs` | No | `true` | Close older test-runner PRs in standalone mode |
+| `app_id` | No | `''` | GitHub App ID for custom bot identity |
+
+**Secrets:** `ANTHROPIC_API_KEY` (required), `PAT` (optional), `APP_PRIVATE_KEY` (optional)
+
+**Outputs:** `tests_generated`, `tests_passed`, `pr_number`
+
+---
+
 ## Setup
 
 1. Add `ANTHROPIC_API_KEY` to your repository secrets
@@ -386,3 +469,4 @@ jobs:
 - **Fix Agent**: Dispatched automatically by General Reviewer on `REQUEST_CHANGES`, or comment `@fix`
 - **Issue Fix Agent**: Dispatched automatically by other reviewers on `REQUEST_CHANGES`, or comment `@issue-fix`
 - **Merge Checker**: Dispatched automatically by General Reviewer on `APPROVE`, or comment `@merge-check`
+- **Test Runner**: Scheduled weekly, manual dispatch, or comment `@test-runner` on a PR

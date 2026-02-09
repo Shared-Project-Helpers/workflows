@@ -1,0 +1,601 @@
+name: Claude Test Runner
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: 'Operation mode: standalone (create branch + PR) or pr (push to existing PR branch)'
+        required: false
+        default: 'standalone'
+        type: string
+      pr_number:
+        description: 'Target PR number (required for pr mode)'
+        required: false
+        default: ''
+        type: string
+      model:
+        description: 'Claude model to use'
+        required: false
+        default: 'claude-sonnet-4-5-20250929'
+        type: string
+      max_iterations:
+        description: 'Max generate/fix iterations'
+        required: false
+        default: '3'
+        type: string
+      test_command:
+        description: 'Command to run tests (e.g. ./gradlew test)'
+        required: true
+        type: string
+      source_paths:
+        description: 'Paths to scan for source code (space-separated)'
+        required: false
+        default: 'src'
+        type: string
+      test_paths:
+        description: 'Paths where tests should be written (space-separated)'
+        required: false
+        default: 'src'
+        type: string
+      test_guidelines:
+        description: 'Project-specific test writing guidelines for Claude'
+        required: false
+        default: ''
+        type: string
+      setup_java:
+        description: 'Java version to set up (empty to skip)'
+        required: false
+        default: ''
+        type: string
+      setup_node:
+        description: 'Node.js version to set up (empty to skip)'
+        required: false
+        default: ''
+        type: string
+      runner_name:
+        description: 'Display name for the test runner persona'
+        required: false
+        default: 'Test Runner'
+        type: string
+      commit_author_name:
+        description: 'Git author name for test commits'
+        required: false
+        default: 'Test Runner'
+        type: string
+      commit_author_email:
+        description: 'Git author email for test commits'
+        required: false
+        default: 'test-runner@users.noreply.github.com'
+        type: string
+      branch_prefix:
+        description: 'Branch name prefix for standalone mode'
+        required: false
+        default: 'test-runner'
+        type: string
+      close_stale_prs:
+        description: 'Close older test-runner PRs in standalone mode'
+        required: false
+        default: 'true'
+        type: string
+      app_id:
+        description: 'GitHub App ID for custom bot identity (leave empty to use github-actions[bot])'
+        required: false
+        default: ''
+        type: string
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: true
+      PAT:
+        required: false
+        description: 'Personal Access Token for pushing (enables workflow triggers)'
+      APP_PRIVATE_KEY:
+        required: false
+        description: 'GitHub App private key for custom bot identity'
+    outputs:
+      tests_generated:
+        description: 'Number of test files generated'
+        value: ${{ jobs.run-tests.outputs.tests_generated }}
+      tests_passed:
+        description: 'Whether all tests passed'
+        value: ${{ jobs.run-tests.outputs.tests_passed }}
+      pr_number:
+        description: 'PR number (created or target)'
+        value: ${{ jobs.run-tests.outputs.pr_number }}
+
+concurrency:
+  group: test-runner-${{ inputs.pr_number || 'standalone' }}
+  cancel-in-progress: true
+
+jobs:
+  run-tests:
+    name: Generate & Run Tests
+    runs-on: ubuntu-latest
+    outputs:
+      tests_generated: ${{ steps.iterate.outputs.tests_generated }}
+      tests_passed: ${{ steps.iterate.outputs.tests_passed }}
+      pr_number: ${{ steps.pr-manage.outputs.pr_number }}
+
+    steps:
+      - name: Generate app token
+        id: app-token
+        if: inputs.app_id != ''
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ inputs.app_id }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      # --- Branch Setup ---
+      - name: Get PR branch (pr mode)
+        id: pr-info
+        if: inputs.mode == 'pr' && inputs.pr_number != ''
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: parseInt('${{ inputs.pr_number }}')
+            });
+            core.setOutput('head_ref', pr.head.ref);
+            core.setOutput('base_ref', pr.base.ref);
+
+      - name: Checkout (pr mode)
+        if: inputs.mode == 'pr' && inputs.pr_number != ''
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pr-info.outputs.head_ref }}
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token || secrets.PAT || github.token }}
+
+      - name: Checkout (standalone mode)
+        if: inputs.mode == 'standalone'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token || secrets.PAT || github.token }}
+
+      - name: Create test branch (standalone mode)
+        id: branch
+        if: inputs.mode == 'standalone'
+        run: |
+          TIMESTAMP=$(date -u +"%Y%m%d-%H%M%S")
+          BRANCH_NAME="${{ inputs.branch_prefix }}/auto-${TIMESTAMP}"
+          git checkout -b "$BRANCH_NAME"
+          echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
+
+      # --- Build Environment ---
+      - name: Set up Java
+        if: inputs.setup_java != ''
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: ${{ inputs.setup_java }}
+
+      - name: Set up Node.js
+        if: inputs.setup_node != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.setup_node }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Anthropic SDK
+        run: pip install anthropic
+
+      # --- Analyze Codebase ---
+      - name: Gather codebase context
+        id: context
+        run: |
+          # Collect source files
+          SOURCE_FILES=""
+          for dir in ${{ inputs.source_paths }}; do
+            if [ -d "$dir" ]; then
+              SOURCE_FILES="${SOURCE_FILES}$(find "$dir" -type f \( -name '*.kt' -o -name '*.java' -o -name '*.ts' -o -name '*.js' -o -name '*.py' -o -name '*.swift' -o -name '*.go' -o -name '*.rs' \) | head -50)\n"
+            fi
+          done
+
+          # Collect existing test files
+          EXISTING_TESTS=""
+          for dir in ${{ inputs.test_paths }}; do
+            if [ -d "$dir" ]; then
+              EXISTING_TESTS="${EXISTING_TESTS}$(find "$dir" -type f \( -name '*Test*' -o -name '*test*' -o -name '*Spec*' -o -name '*spec*' \) | head -50)\n"
+            fi
+          done
+
+          # Collect build config snippets
+          BUILD_CONFIG=""
+          for f in build.gradle.kts build.gradle package.json pom.xml Cargo.toml go.mod; do
+            if [ -f "$f" ]; then
+              BUILD_CONFIG="${BUILD_CONFIG}--- $f ---\n$(head -80 "$f")\n\n"
+            fi
+          done
+
+          # Read source file contents (up to 60KB total)
+          SOURCE_CONTENTS=""
+          TOTAL_SIZE=0
+          MAX_SIZE=60000
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+            [ ! -f "$file" ] && continue
+            FILE_SIZE=$(wc -c < "$file")
+            NEW_TOTAL=$((TOTAL_SIZE + FILE_SIZE))
+            if [ "$NEW_TOTAL" -gt "$MAX_SIZE" ]; then
+              break
+            fi
+            SOURCE_CONTENTS="${SOURCE_CONTENTS}--- ${file} ---\n$(cat "$file")\n\n"
+            TOTAL_SIZE=$NEW_TOTAL
+          done <<< "$(echo -e "$SOURCE_FILES" | sort)"
+
+          # Read existing test contents
+          TEST_CONTENTS=""
+          TOTAL_SIZE=0
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+            [ ! -f "$file" ] && continue
+            FILE_SIZE=$(wc -c < "$file")
+            NEW_TOTAL=$((TOTAL_SIZE + FILE_SIZE))
+            if [ "$NEW_TOTAL" -gt "$MAX_SIZE" ]; then
+              break
+            fi
+            TEST_CONTENTS="${TEST_CONTENTS}--- ${file} ---\n$(cat "$file")\n\n"
+            TOTAL_SIZE=$NEW_TOTAL
+          done <<< "$(echo -e "$EXISTING_TESTS" | sort)"
+
+          # Write to files to avoid output size limits
+          echo -e "$SOURCE_FILES" > /tmp/source_files.txt
+          echo -e "$EXISTING_TESTS" > /tmp/existing_tests.txt
+          echo -e "$BUILD_CONFIG" > /tmp/build_config.txt
+          echo -e "$SOURCE_CONTENTS" > /tmp/source_contents.txt
+          echo -e "$TEST_CONTENTS" > /tmp/test_contents.txt
+
+      # --- Generate/Fix/Run Loop ---
+      - name: Generate and run tests (iteration loop)
+        id: iterate
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          MODEL: ${{ inputs.model }}
+          MAX_ITERATIONS: ${{ inputs.max_iterations }}
+          TEST_COMMAND: ${{ inputs.test_command }}
+          TEST_GUIDELINES: ${{ inputs.test_guidelines }}
+          TEST_PATHS: ${{ inputs.test_paths }}
+        run: |
+          python << 'PYTHON_SCRIPT'
+          import anthropic
+          import os
+          import json
+          import re
+          import subprocess
+          import sys
+
+          client = anthropic.Anthropic()
+          model = os.environ.get('MODEL', 'claude-sonnet-4-5-20250929')
+          max_iterations = int(os.environ.get('MAX_ITERATIONS', '3'))
+          test_command = os.environ.get('TEST_COMMAND', '')
+          test_guidelines = os.environ.get('TEST_GUIDELINES', '')
+          test_paths = os.environ.get('TEST_PATHS', 'src')
+
+          def read_file(path):
+              try:
+                  with open(path, 'r') as f:
+                      return f.read()
+              except Exception:
+                  return ''
+
+          source_files = read_file('/tmp/source_files.txt')
+          existing_tests = read_file('/tmp/existing_tests.txt')
+          build_config = read_file('/tmp/build_config.txt')
+          source_contents = read_file('/tmp/source_contents.txt')
+          test_contents = read_file('/tmp/test_contents.txt')
+
+          def run_tests():
+              """Run the test command and return (success, output)."""
+              try:
+                  result = subprocess.run(
+                      test_command,
+                      shell=True,
+                      capture_output=True,
+                      text=True,
+                      timeout=300
+                  )
+                  output = result.stdout[-5000:] + '\n' + result.stderr[-5000:]
+                  return result.returncode == 0, output.strip()
+              except subprocess.TimeoutExpired:
+                  return False, 'ERROR: Test command timed out after 300 seconds'
+              except Exception as e:
+                  return False, f'ERROR: Failed to run tests: {e}'
+
+          def ask_claude(messages):
+              """Send messages to Claude and return the response text."""
+              response = client.messages.create(
+                  model=model,
+                  max_tokens=8192,
+                  messages=messages
+              )
+              return response.content[0].text
+
+          def parse_test_files(response_text):
+              """Parse Claude's response to extract test files.
+              Expected format: JSON with test_files array of {path, content}."""
+              try:
+                  json_match = re.search(r'\{[\s\S]*\}', response_text)
+                  if json_match:
+                      data = json.loads(json_match.group())
+                      return data.get('test_files', [])
+              except Exception as e:
+                  print(f'Warning: Failed to parse JSON response: {e}')
+              return []
+
+          def write_test_files(test_files):
+              """Write test files to disk. Returns list of paths written."""
+              written = []
+              for tf in test_files:
+                  path = tf.get('path', '')
+                  content = tf.get('content', '')
+                  if not path or not content:
+                      continue
+                  os.makedirs(os.path.dirname(path), exist_ok=True)
+                  with open(path, 'w') as f:
+                      f.write(content)
+                  written.append(path)
+                  print(f'  Wrote: {path}')
+              return written
+
+          # Build the initial prompt
+          system_prompt = f"""You are a senior test engineer. Your job is to generate comprehensive, \
+          well-structured tests for the given source code.
+
+          {f"PROJECT-SPECIFIC GUIDELINES:{chr(10)}{test_guidelines}" if test_guidelines else ""}
+
+          RESPONSE FORMAT: Respond with a JSON object containing test files to create:
+          {{
+            "test_files": [
+              {{
+                "path": "relative/path/to/TestFile.kt",
+                "content": "full file content including all imports and package declaration"
+              }}
+            ],
+            "summary": "Brief description of what tests were generated"
+          }}
+
+          RULES:
+          - Generate COMPLETE files with all necessary imports, package declarations, and annotations
+          - Each test file must be self-contained and compilable
+          - Write tests that are deterministic and do not depend on external services
+          - Use mocks/fakes for external dependencies (HTTP clients, databases, etc.)
+          - Cover happy paths, edge cases, and error scenarios
+          - Use descriptive test names that explain the expected behavior
+          - Keep tests focused — one logical concern per test function"""
+
+          initial_message = f"""Generate tests for the following project.
+
+          ## Source Files
+          {source_files}
+
+          ## Source Code
+          {source_contents[:40000]}
+
+          ## Build Configuration
+          {build_config}
+
+          ## Existing Tests
+          {existing_tests if existing_tests.strip() else "No existing tests found."}
+
+          {f"## Existing Test Code{chr(10)}{test_contents[:20000]}" if test_contents.strip() else ""}
+
+          ## Test Output Directory
+          Place test files under: {test_paths}
+
+          Generate comprehensive tests for all source files."""
+
+          messages = [{"role": "user", "content": initial_message}]
+
+          all_written_files = []
+          tests_passed = False
+
+          for iteration in range(1, max_iterations + 1):
+              print(f'\n{"="*60}')
+              print(f'ITERATION {iteration}/{max_iterations}')
+              print(f'{"="*60}')
+
+              # Ask Claude to generate/fix tests
+              print('Asking Claude to generate tests...')
+              response = ask_claude([{"role": "user", "content": messages[-1]["content"]}] if iteration == 1 else messages)
+
+              # Parse and write test files
+              test_files = parse_test_files(response)
+              if not test_files:
+                  print('No test files in response. Retrying with clarification...')
+                  messages.append({"role": "assistant", "content": response})
+                  messages.append({"role": "user", "content": "Your response did not contain valid JSON with test_files. Please respond with the exact JSON format specified."})
+                  continue
+
+              print(f'Generated {len(test_files)} test file(s):')
+              written = write_test_files(test_files)
+              all_written_files.extend([f for f in written if f not in all_written_files])
+
+              # Run tests
+              print(f'\nRunning: {test_command}')
+              success, output = run_tests()
+
+              if success:
+                  print('\nAll tests PASSED!')
+                  tests_passed = True
+                  break
+              else:
+                  print(f'\nTests FAILED (iteration {iteration}/{max_iterations})')
+                  print(f'Output (last 2000 chars):\n{output[-2000:]}')
+
+                  if iteration < max_iterations:
+                      # Build fix prompt
+                      current_test_contents = ''
+                      for f in all_written_files:
+                          try:
+                              with open(f, 'r') as fh:
+                                  current_test_contents += f'--- {f} ---\n{fh.read()}\n\n'
+                          except Exception:
+                              pass
+
+                      fix_message = f"""The tests failed. Fix them.
+
+          ## Test Output
+          ```
+          {output[-4000:]}
+          ```
+
+          ## Current Test Files
+          {current_test_contents[:30000]}
+
+          ## Source Code (for reference)
+          {source_contents[:20000]}
+
+          Respond with the corrected test files using the same JSON format.
+          Fix ALL compilation errors and test failures.
+          Make sure all imports are correct and all referenced classes/functions exist."""
+
+                      messages = [{"role": "user", "content": fix_message}]
+
+          # Write outputs
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'tests_generated={len(all_written_files)}\n')
+              f.write(f'tests_passed={"true" if tests_passed else "false"}\n')
+
+          # Write file list for commit step
+          with open('/tmp/test_files_written.txt', 'w') as f:
+              f.write('\n'.join(all_written_files))
+
+          print(f'\n{"="*60}')
+          print(f'RESULT: {len(all_written_files)} test file(s), passed={tests_passed}')
+          print(f'{"="*60}')
+          PYTHON_SCRIPT
+
+      # --- Commit & Push ---
+      - name: Commit and push test files
+        id: commit
+        if: steps.iterate.outputs.tests_generated != '0'
+        run: |
+          git config user.name "${{ inputs.commit_author_name }}"
+          git config user.email "${{ inputs.commit_author_email }}"
+
+          # Add only the test files we generated
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+            git add "$file"
+          done < /tmp/test_files_written.txt
+
+          PASSED="${{ steps.iterate.outputs.tests_passed }}"
+          if [ "$PASSED" = "true" ]; then
+            COMMIT_MSG="test: add auto-generated tests (all passing)"
+          else
+            COMMIT_MSG="test: add auto-generated tests (some failing)"
+          fi
+
+          git commit -m "${COMMIT_MSG}
+
+          Co-Authored-By: Claude <noreply@anthropic.com>" || echo "nothing_to_commit=true" >> $GITHUB_OUTPUT
+
+          if [ "${{ inputs.mode }}" = "standalone" ]; then
+            git push origin "${{ steps.branch.outputs.branch_name }}"
+          else
+            git push origin "${{ steps.pr-info.outputs.head_ref }}"
+          fi
+
+          echo "committed=true" >> $GITHUB_OUTPUT
+
+      # --- PR Management ---
+      - name: Manage PRs
+        id: pr-manage
+        if: steps.commit.outputs.committed == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ steps.app-token.outputs.token || secrets.PAT || github.token }}
+          script: |
+            const mode = '${{ inputs.mode }}';
+            const testsGenerated = parseInt('${{ steps.iterate.outputs.tests_generated }}') || 0;
+            const testsPassed = '${{ steps.iterate.outputs.tests_passed }}' === 'true';
+            const runnerName = '${{ inputs.runner_name }}';
+
+            if (mode === 'standalone') {
+              const branchName = '${{ steps.branch.outputs.branch_name }}';
+              const branchPrefix = '${{ inputs.branch_prefix }}';
+
+              // Close stale test-runner PRs
+              if ('${{ inputs.close_stale_prs }}' === 'true') {
+                const { data: openPrs } = await github.rest.pulls.list({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  state: 'open',
+                  per_page: 50
+                });
+
+                for (const pr of openPrs) {
+                  if (pr.head.ref.startsWith(branchPrefix + '/') && pr.head.ref !== branchName) {
+                    console.log(`Closing stale PR #${pr.number}: ${pr.head.ref}`);
+                    await github.rest.pulls.update({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      pull_number: pr.number,
+                      state: 'closed'
+                    });
+                    await github.rest.issues.createComment({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      issue_number: pr.number,
+                      body: `Closed by newer ${runnerName} run. See branch \`${branchName}\`.`
+                    });
+                  }
+                }
+              }
+
+              // Create new PR
+              const { data: pr } = await github.rest.pulls.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: `test: auto-generated tests (${testsPassed ? 'passing' : 'some failing'})`,
+                head: branchName,
+                base: 'main',
+                draft: !testsPassed,
+                body: [
+                  `## ${runnerName}`,
+                  '',
+                  `**Test files generated:** ${testsGenerated}`,
+                  `**Tests passing:** ${testsPassed ? 'Yes' : 'No — opened as draft'}`,
+                  '',
+                  `Generated by the ${runnerName} agent.`,
+                  '',
+                  '---',
+                  `*${runnerName}*`
+                ].join('\n')
+              });
+
+              console.log(`Created PR #${pr.number}: ${pr.html_url}`);
+              core.setOutput('pr_number', pr.number);
+              core.setOutput('pr_url', pr.html_url);
+
+            } else {
+              // PR mode — comment on existing PR
+              const prNumber = parseInt('${{ inputs.pr_number }}');
+
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body: [
+                  `## ${runnerName}`,
+                  '',
+                  `**Test files generated:** ${testsGenerated}`,
+                  `**Tests passing:** ${testsPassed ? 'Yes' : 'No'}`,
+                  '',
+                  testsPassed
+                    ? 'All generated tests are passing.'
+                    : 'Some tests are failing. Manual review may be needed.',
+                  '',
+                  '---',
+                  `*${runnerName}*`
+                ].join('\n')
+              });
+
+              core.setOutput('pr_number', prNumber);
+            }
