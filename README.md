@@ -4,41 +4,44 @@ Reusable GitHub Actions workflows for Claude-powered code review, automated fixe
 
 ## Agent Roster
 
-| Agent | Persona | Role | Workflow | Trigger |
-|-------|---------|------|----------|---------|
-| General Review | **Thorin** | Code quality, bugs, logic | `claude-review.yml` | PR open/sync, `@claude` |
-| Performance Review | **Dwalin** | Performance, efficiency, cost | `claude-perf-review.yml` | PR open/sync, `@dwalin` |
-| Safety & Privacy | **Oin** | Security, privacy, OWASP | `claude-safety-review.yml` | PR open/sync, `@oin` |
-| Simple Fix | **Gloin** | Fix Thorin's feedback | `claude-fix.yml` | Dispatched by Thorin, `@claude fix` |
-| Issue Fix & Manage | **Nori** | Fix any reviewer's feedback, create issues | `claude-issue-fix.yml` | Dispatched by Dwalin/Oin, `@nori` |
-| Merge Readiness | **Balin** | Merge gate, verifies all approvals | `claude-merge-check.yml` | Dispatched by Thorin, `@balin` |
+| Role | Workflow | Trigger |
+|------|----------|---------|
+| **General Reviewer** — Code quality, bugs, logic | `claude-review.yml` | PR open/sync, `@review` |
+| **Performance Reviewer** — Performance, efficiency, cost | `claude-perf-review.yml` | PR open/sync, `@perf-review` |
+| **Safety Reviewer** — Security, privacy, OWASP | `claude-safety-review.yml` | PR open/sync, `@safety-review` |
+| **Test Reviewer** — Test coverage, test quality | `claude-test-review.yml` | PR open/sync, `@test-review` |
+| **Fix Agent** — Fix General Reviewer's feedback | `claude-fix.yml` | Dispatched by General Reviewer, `@fix` |
+| **Issue Fix Agent** — Fix all reviewers' feedback, create issues | `claude-issue-fix.yml` | Dispatched by other reviewers, `@issue-fix` |
+| **Merge Checker** — Merge gate, verifies all approvals | `claude-merge-check.yml` | Dispatched by General Reviewer, `@merge-check` |
 
 ## Pipeline Flow
 
 ```
 PR opened/updated
-  ├──→ Thorin (general review)      ─┐
-  ├──→ Dwalin (performance review)  ─┤  all three run in parallel
-  └──→ Oin (safety/privacy review)  ─┘
+  ├──→ General Reviewer              ─┐
+  ├──→ Performance Reviewer          ─┤  all four run in parallel
+  ├──→ Safety Reviewer               ─┤
+  └──→ Test Reviewer                 ─┘
          │
-         ├─ Thorin REQUEST_CHANGES  → Gloin (simple fix) → push re-triggers all
-         ├─ Dwalin REQUEST_CHANGES  → Nori (issue fix)   → push re-triggers all
-         ├─ Oin REQUEST_CHANGES     → Nori (issue fix)   → push re-triggers all
+         ├─ General Reviewer REQUEST_CHANGES      → Fix Agent (simple fix)       → push re-triggers all
+         ├─ Performance Reviewer REQUEST_CHANGES  → Issue Fix Agent (issue fix)  → push re-triggers all
+         ├─ Safety Reviewer REQUEST_CHANGES       → Issue Fix Agent (issue fix)  → push re-triggers all
+         ├─ Test Reviewer REQUEST_CHANGES         → Issue Fix Agent (issue fix)  → push re-triggers all
          │
-         └─ Thorin APPROVE → Balin (merge readiness)
-                               ├─ checks: CI + Thorin + Dwalin + Oin approvals
-                               └─ ready → auto-merge (if 'auto-merge' label)
+         └─ General Reviewer APPROVE → Merge Checker
+                                        ├─ checks: CI + all required reviewer approvals
+                                        └─ ready → auto-merge (if 'auto-merge' label)
 ```
 
-Nori creates GitHub Issues for critical problems outside PR scope (deferred items).
+Issue Fix Agent creates GitHub Issues for critical problems outside PR scope (deferred items).
 
 ---
 
 ## Workflows
 
-### Claude Code Review (`claude-review.yml`) — Thorin
+### General Reviewer (`claude-review.yml`)
 
-Automatically reviews pull requests using Claude for general code quality, bugs, and logic. On `REQUEST_CHANGES`, it dispatches Gloin (fix workflow). On `APPROVE`, it dispatches Balin (merge readiness check).
+Reviews pull requests for code quality, bugs, and logic. On `REQUEST_CHANGES`, dispatches Fix Agent. On `APPROVE`, dispatches Merge Checker.
 
 **Usage:**
 
@@ -63,17 +66,16 @@ jobs:
       github.event_name == 'pull_request' ||
       (github.event_name == 'issue_comment' &&
        github.event.issue.pull_request &&
-       contains(github.event.comment.body, '@claude'))
+       contains(github.event.comment.body, '@review'))
     uses: Shared-Project-Helpers/workflows/.github/workflows/claude-review.yml@main
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
     with:
-      reviewer_name: 'Thorin Oakenshield'
+      reviewer_name: 'General Reviewer'
       review_guidelines: |
         - Follow Kotlin coding conventions
         - Use coroutines for async operations
       auto_merge_label: 'auto-merge'
-      auto_merge_method: 'squash'
 ```
 
 **Inputs:**
@@ -84,65 +86,41 @@ jobs:
 | `review_guidelines` | No | `''` | Additional project-specific review guidelines |
 | `diff_limit` | No | `50000` | Max diff size in bytes |
 | `excluded_files` | No | `:!*.lock :!package-lock.json` | Git pathspec for excluded files |
-| `auto_merge_label` | No | `''` | Label that enables auto-merge on approval (empty = disabled) |
+| `auto_merge_label` | No | `''` | Label that enables auto-merge on approval |
 | `auto_merge_method` | No | `squash` | Merge method: `merge`, `squash`, or `rebase` |
-| `reviewer_name` | No | `Claude` | Display name for the reviewer persona |
+| `reviewer_name` | No | `General Reviewer` | Display name for the reviewer persona |
 | `app_id` | No | `''` | GitHub App ID for custom bot identity |
-| `trigger_fix_on_request_changes` | No | `'true'` | Dispatch fix workflow when review requests changes |
-| `trigger_merge_check_on_approve` | No | `'true'` | Dispatch merge check workflow when review approves |
+| `trigger_fix_on_request_changes` | No | `'true'` | Dispatch fix workflow on REQUEST_CHANGES |
+| `trigger_merge_check_on_approve` | No | `'true'` | Dispatch merge check on APPROVE |
 | `fix_workflow_id` | No | `claude-fix.yml` | Fix workflow filename to dispatch |
-| `merge_check_workflow_id` | No | `claude-merge-check.yml` | Merge check workflow filename to dispatch |
+| `merge_check_workflow_id` | No | `claude-merge-check.yml` | Merge check workflow to dispatch |
+| `create_tracked_issues` | No | `'true'` | Create GitHub Issues for non-blocking concerns |
 
-**Secrets:**
+**Secrets:** `ANTHROPIC_API_KEY` (required), `APP_PRIVATE_KEY` (optional)
 
-| Secret | Required | Description |
-|--------|----------|-------------|
-| `ANTHROPIC_API_KEY` | Yes | Anthropic API key for Claude |
-| `APP_PRIVATE_KEY` | No | GitHub App private key for custom bot identity |
-
-**Outputs:**
-
-| Output | Description |
-|--------|-------------|
-| `decision` | Review decision: `APPROVE`, `REQUEST_CHANGES`, or `COMMENT` |
-| `pr_number` | Pull request number |
-| `head_ref` | PR head branch ref |
+**Outputs:** `decision`, `pr_number`, `head_ref`
 
 ---
 
-### Claude Performance Review (`claude-perf-review.yml`) — Dwalin
+### Performance Reviewer (`claude-perf-review.yml`)
 
-Reviews pull requests for performance, efficiency, and cost concerns. Focuses on client-server efficiency, bandwidth, caching, algorithm complexity, memory, network, resource cleanup, and cost optimization. On `REQUEST_CHANGES`, dispatches Nori (issue fix workflow).
+Reviews pull requests for performance, efficiency, and cost concerns. Categories: API efficiency, bandwidth, caching, algorithm complexity, memory, network, resource cleanup, cost optimization. On `REQUEST_CHANGES`, dispatches Issue Fix Agent.
 
 **Usage:**
 
 ```yaml
-name: Performance Review
-
-on:
-  pull_request:
-    types: [opened, synchronize, reopened]
-  issue_comment:
-    types: [created]
-
-permissions:
-  contents: write
-  pull-requests: write
-  issues: write
-  actions: write
-
 jobs:
   perf-review:
     if: |
       github.event_name == 'pull_request' ||
       (github.event_name == 'issue_comment' &&
        github.event.issue.pull_request &&
-       contains(github.event.comment.body, '@dwalin'))
+       contains(github.event.comment.body, '@perf-review'))
     uses: Shared-Project-Helpers/workflows/.github/workflows/claude-perf-review.yml@main
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
     with:
-      reviewer_name: 'Dwalin'
+      reviewer_name: 'Performance Reviewer'
       perf_guidelines: |
         - Watch for N+1 query patterns
         - Ensure proper use of Kotlin coroutines
@@ -153,69 +131,41 @@ jobs:
 | Input | Required | Default | Description |
 |-------|----------|---------|-------------|
 | `model` | No | `claude-opus-4-6` | Claude model to use |
-| `perf_guidelines` | No | `''` | Additional project-specific performance guidelines |
+| `perf_guidelines` | No | `''` | Additional performance guidelines |
 | `diff_limit` | No | `50000` | Max diff size in bytes |
 | `excluded_files` | No | `:!*.lock :!package-lock.json` | Git pathspec for excluded files |
-| `reviewer_name` | No | `Dwalin` | Display name for the reviewer persona |
+| `reviewer_name` | No | `Performance Reviewer` | Display name for the reviewer persona |
 | `app_id` | No | `''` | GitHub App ID for custom bot identity |
-| `trigger_fix_on_request_changes` | No | `'true'` | Dispatch fix workflow when review requests changes |
+| `trigger_fix_on_request_changes` | No | `'true'` | Dispatch fix workflow on REQUEST_CHANGES |
 | `fix_workflow_id` | No | `claude-issue-fix.yml` | Fix workflow filename to dispatch |
 
-**Secrets:**
+**Secrets:** `ANTHROPIC_API_KEY` (required), `APP_PRIVATE_KEY` (optional)
 
-| Secret | Required | Description |
-|--------|----------|-------------|
-| `ANTHROPIC_API_KEY` | Yes | Anthropic API key for Claude |
-| `APP_PRIVATE_KEY` | No | GitHub App private key for custom bot identity |
-
-**Outputs:**
-
-| Output | Description |
-|--------|-------------|
-| `decision` | Review decision: `APPROVE`, `REQUEST_CHANGES`, or `COMMENT` |
-| `pr_number` | Pull request number |
-| `head_ref` | PR head branch ref |
+**Outputs:** `decision`, `pr_number`, `head_ref`
 
 ---
 
-### Claude Safety & Privacy Review (`claude-safety-review.yml`) — Oin
+### Safety Reviewer (`claude-safety-review.yml`)
 
-Reviews pull requests for security, privacy, and safety concerns. Runs Semgrep SAST and GitLeaks scans before the Claude review, injecting tool results as structured context. Covers OWASP Top 10, secrets, PII, injection, auth, encryption, and privacy-by-design. On `REQUEST_CHANGES`, dispatches Nori (issue fix workflow).
+Reviews pull requests for security, privacy, and safety concerns. Runs Semgrep SAST and GitLeaks scans before the Claude review. Covers OWASP Top 10, secrets, PII, injection, auth, encryption, and privacy-by-design. On `REQUEST_CHANGES`, dispatches Issue Fix Agent.
 
 **Usage:**
 
 ```yaml
-name: Safety & Privacy Review
-
-on:
-  pull_request:
-    types: [opened, synchronize, reopened]
-  issue_comment:
-    types: [created]
-
-permissions:
-  contents: write
-  pull-requests: write
-  issues: write
-  actions: write
-
 jobs:
   safety-review:
     if: |
       github.event_name == 'pull_request' ||
       (github.event_name == 'issue_comment' &&
        github.event.issue.pull_request &&
-       contains(github.event.comment.body, '@oin'))
+       contains(github.event.comment.body, '@safety-review'))
     uses: Shared-Project-Helpers/workflows/.github/workflows/claude-safety-review.yml@main
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
     with:
-      reviewer_name: 'Oin'
+      reviewer_name: 'Safety Reviewer'
       run_semgrep: 'true'
       run_gitleaks: 'true'
-      safety_guidelines: |
-        - Never commit API keys or credentials
-        - All PII must be encrypted at rest
 ```
 
 **Inputs:**
@@ -223,75 +173,87 @@ jobs:
 | Input | Required | Default | Description |
 |-------|----------|---------|-------------|
 | `model` | No | `claude-opus-4-6` | Claude model to use |
-| `safety_guidelines` | No | `''` | Additional project-specific safety guidelines |
+| `safety_guidelines` | No | `''` | Additional safety guidelines |
 | `diff_limit` | No | `50000` | Max diff size in bytes |
 | `excluded_files` | No | `:!*.lock :!package-lock.json` | Git pathspec for excluded files |
-| `reviewer_name` | No | `Oin` | Display name for the reviewer persona |
+| `reviewer_name` | No | `Safety Reviewer` | Display name for the reviewer persona |
 | `app_id` | No | `''` | GitHub App ID for custom bot identity |
-| `trigger_fix_on_request_changes` | No | `'true'` | Dispatch fix workflow when review requests changes |
+| `trigger_fix_on_request_changes` | No | `'true'` | Dispatch fix workflow on REQUEST_CHANGES |
 | `fix_workflow_id` | No | `claude-issue-fix.yml` | Fix workflow filename to dispatch |
-| `run_semgrep` | No | `'true'` | Run Semgrep SAST scan before Claude review |
-| `run_gitleaks` | No | `'true'` | Run GitLeaks secrets scan before Claude review |
+| `run_semgrep` | No | `'true'` | Run Semgrep SAST scan |
+| `run_gitleaks` | No | `'true'` | Run GitLeaks secrets scan |
 | `semgrep_rules` | No | `auto` | Semgrep ruleset to use |
 
-**Secrets:**
+**Secrets:** `ANTHROPIC_API_KEY` (required), `APP_PRIVATE_KEY` (optional)
 
-| Secret | Required | Description |
-|--------|----------|-------------|
-| `ANTHROPIC_API_KEY` | Yes | Anthropic API key for Claude |
-| `APP_PRIVATE_KEY` | No | GitHub App private key for custom bot identity |
-
-**Outputs:**
-
-| Output | Description |
-|--------|-------------|
-| `decision` | Review decision: `APPROVE`, `REQUEST_CHANGES`, or `COMMENT` |
-| `pr_number` | Pull request number |
-| `head_ref` | PR head branch ref |
-| `semgrep_findings` | Number of Semgrep findings |
-| `gitleaks_findings` | Number of GitLeaks findings |
+**Outputs:** `decision`, `pr_number`, `head_ref`, `semgrep_findings`, `gitleaks_findings`
 
 ---
 
-### Claude Fix Agent (`claude-fix.yml`) — Gloin
+### Test Reviewer (`claude-test-review.yml`)
 
-Automatically applies fixes based on Thorin's review feedback. Also updates the PR branch if it is behind the base branch.
+Reviews pull requests for test coverage, test quality, and missing tests. Detects test files and frameworks, optionally runs tests, then asks Claude to assess whether the changes have adequate test coverage. On `REQUEST_CHANGES`, dispatches Issue Fix Agent.
 
 **Usage:**
 
 ```yaml
-name: Fix Agent
+jobs:
+  test-review:
+    if: |
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request &&
+       contains(github.event.comment.body, '@test-review'))
+    uses: Shared-Project-Helpers/workflows/.github/workflows/claude-test-review.yml@main
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    with:
+      reviewer_name: 'Test Reviewer'
+      test_command: './gradlew test'
+```
 
-on:
-  workflow_dispatch:
-    inputs:
-      pr_number:
-        description: 'PR number to fix'
-        required: true
-        type: string
-  issue_comment:
-    types: [created]
+**Inputs:**
 
-permissions:
-  contents: write
-  pull-requests: write
-  issues: write
+| Input | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `model` | No | `claude-opus-4-6` | Claude model to use |
+| `test_guidelines` | No | `''` | Additional test review guidelines |
+| `diff_limit` | No | `50000` | Max diff size in bytes |
+| `excluded_files` | No | `:!*.lock :!package-lock.json` | Git pathspec for excluded files |
+| `reviewer_name` | No | `Test Reviewer` | Display name for the reviewer persona |
+| `app_id` | No | `''` | GitHub App ID for custom bot identity |
+| `trigger_fix_on_request_changes` | No | `'true'` | Dispatch fix workflow on REQUEST_CHANGES |
+| `fix_workflow_id` | No | `claude-issue-fix.yml` | Fix workflow filename to dispatch |
+| `test_command` | No | `''` | Command to run tests (empty = skip execution) |
 
+**Secrets:** `ANTHROPIC_API_KEY` (required), `APP_PRIVATE_KEY` (optional)
+
+**Outputs:** `decision`, `pr_number`, `head_ref`, `tests_passed`
+
+---
+
+### Fix Agent (`claude-fix.yml`)
+
+Applies fixes based on General Reviewer's feedback. Also updates the PR branch if it is behind the base branch.
+
+**Usage:**
+
+```yaml
 jobs:
   fix:
     if: |
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'issue_comment' &&
        github.event.issue.pull_request &&
-       contains(github.event.comment.body, '@claude fix'))
+       contains(github.event.comment.body, '@fix'))
     uses: Shared-Project-Helpers/workflows/.github/workflows/claude-fix.yml@main
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
     with:
       pr_number: ${{ github.event.inputs.pr_number || github.event.issue.number }}
-      fixer_name: 'Gloin'
-      commit_author_name: 'Gloin'
-      commit_author_email: 'gloin@users.noreply.github.com'
+      fixer_name: 'Fix Agent'
+      commit_author_name: 'Fix Agent'
+      commit_author_email: 'fix-agent@users.noreply.github.com'
 ```
 
 **Inputs:**
@@ -301,73 +263,47 @@ jobs:
 | `pr_number` | Yes | - | Pull request number to fix |
 | `model` | No | `claude-opus-4-6` | Claude model to use |
 | `max_tokens` | No | `8192` | Max tokens for fix response |
-| `fixer_name` | No | `Claude Fix Agent` | Display name for the fixer persona |
+| `fixer_name` | No | `Fix Agent` | Display name for the fixer persona |
 | `app_id` | No | `''` | GitHub App ID for custom bot identity |
-| `commit_author_name` | No | `Claude Fix Agent` | Git author name for fix commits |
-| `commit_author_email` | No | `claude-fix-agent@users.noreply.github.com` | Git author email |
+| `commit_author_name` | No | `Fix Agent` | Git author name |
+| `commit_author_email` | No | `fix-agent@users.noreply.github.com` | Git author email |
 
-**Secrets:**
+**Secrets:** `ANTHROPIC_API_KEY` (required), `PAT` (optional), `APP_PRIVATE_KEY` (optional)
 
-| Secret | Required | Description |
-|--------|----------|-------------|
-| `ANTHROPIC_API_KEY` | Yes | Anthropic API key for Claude |
-| `PAT` | No | Personal Access Token for pushing (enables workflow re-triggers) |
-| `APP_PRIVATE_KEY` | No | GitHub App private key for custom bot identity |
-
-**Outputs:**
-
-| Output | Description |
-|--------|-------------|
-| `files_changed` | Number of files changed |
+**Outputs:** `files_changed`
 
 ---
 
-### Claude Issue Fix Agent (`claude-issue-fix.yml`) — Nori
+### Issue Fix Agent (`claude-issue-fix.yml`)
 
-Collects feedback from ALL reviewers (Thorin, Dwalin, Oin) and applies fixes with priority ordering. Creates GitHub Issues for deferred items that cannot be fixed within the PR scope. Uses a concurrency group to prevent parallel runs on the same PR.
+Collects feedback from ALL reviewers and applies fixes with priority ordering. Creates GitHub Issues for deferred items that cannot be fixed within the PR scope. Uses a concurrency group to prevent parallel runs on the same PR.
 
 **Priority order:**
-1. Critical security issues (Oin)
-2. Critical performance issues (Dwalin)
-3. Critical quality issues (Thorin)
-4. Major issues in same order
-5. Minor issues if straightforward
+1. Critical security issues (Safety Reviewer)
+2. Critical performance issues (Performance Reviewer)
+3. Critical quality issues (General Reviewer)
+4. Critical test issues (Test Reviewer)
+5. Major issues in same order
+6. Minor issues if straightforward
 
 **Usage:**
 
 ```yaml
-name: Issue Fix Agent
-
-on:
-  workflow_dispatch:
-    inputs:
-      pr_number:
-        description: 'PR number to fix'
-        required: true
-        type: string
-  issue_comment:
-    types: [created]
-
-permissions:
-  contents: write
-  pull-requests: write
-  issues: write
-
 jobs:
   fix:
     if: |
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'issue_comment' &&
        github.event.issue.pull_request &&
-       contains(github.event.comment.body, '@nori'))
+       contains(github.event.comment.body, '@issue-fix'))
     uses: Shared-Project-Helpers/workflows/.github/workflows/claude-issue-fix.yml@main
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
     with:
       pr_number: ${{ github.event.inputs.pr_number || github.event.issue.number }}
-      fixer_name: 'Nori'
-      commit_author_name: 'Nori'
-      commit_author_email: 'nori@users.noreply.github.com'
+      fixer_name: 'Issue Fix Agent'
+      commit_author_name: 'Issue Fix Agent'
+      commit_author_email: 'issue-fix-agent@users.noreply.github.com'
 ```
 
 **Inputs:**
@@ -377,74 +313,42 @@ jobs:
 | `pr_number` | Yes | - | Pull request number to fix |
 | `model` | No | `claude-opus-4-6` | Claude model to use |
 | `max_tokens` | No | `8192` | Max tokens for fix response |
-| `fixer_name` | No | `Nori` | Display name for the fixer persona |
+| `fixer_name` | No | `Issue Fix Agent` | Display name for the fixer persona |
 | `app_id` | No | `''` | GitHub App ID for custom bot identity |
-| `commit_author_name` | No | `Nori` | Git author name for fix commits |
-| `commit_author_email` | No | `nori@users.noreply.github.com` | Git author email |
+| `commit_author_name` | No | `Issue Fix Agent` | Git author name |
+| `commit_author_email` | No | `issue-fix-agent@users.noreply.github.com` | Git author email |
 | `create_issues_for_deferred` | No | `'true'` | Create GitHub Issues for deferred items |
-| `issue_labels` | No | `deferred,review-feedback` | Comma-separated labels for created issues |
+| `issue_labels` | No | `deferred,review-feedback` | Labels for created issues |
 
-**Secrets:**
+**Secrets:** `ANTHROPIC_API_KEY` (required), `PAT` (optional), `APP_PRIVATE_KEY` (optional)
 
-| Secret | Required | Description |
-|--------|----------|-------------|
-| `ANTHROPIC_API_KEY` | Yes | Anthropic API key for Claude |
-| `PAT` | No | Personal Access Token for pushing (enables workflow re-triggers) |
-| `APP_PRIVATE_KEY` | No | GitHub App private key for custom bot identity |
-
-**Outputs:**
-
-| Output | Description |
-|--------|-------------|
-| `files_changed` | Number of files changed |
-| `fixes_applied` | Number of fixes successfully applied |
-| `fixes_deferred` | Number of issues deferred to GitHub Issues |
-| `issues_created` | Number of GitHub Issues created |
+**Outputs:** `files_changed`, `fixes_applied`, `fixes_deferred`, `issues_created`
 
 ---
 
-### Claude Merge Readiness Check (`claude-merge-check.yml`) — Balin
+### Merge Checker (`claude-merge-check.yml`)
 
-Assesses whether a PR is ready to merge by checking CI status, review approvals, merge conflicts, draft state, and required reviewer approvals. If the branch is behind the base, it can dispatch the fix workflow to update it.
+Assesses whether a PR is ready to merge by checking CI status, review approvals, merge conflicts, draft state, and required reviewer approvals.
 
-**Required Approvals:** When `required_reviewer_names` is set, Balin checks that each named reviewer persona has posted an APPROVE decision in their review comments. This ensures all specialized reviewers (e.g., Dwalin for performance, Oin for safety) have signed off before merge.
+When `required_reviewer_names` is set, Merge Checker verifies each named reviewer has posted an APPROVE decision before allowing merge.
 
 **Usage:**
 
 ```yaml
-name: Merge Readiness Check
-
-on:
-  workflow_dispatch:
-    inputs:
-      pr_number:
-        description: 'PR number to check'
-        required: true
-        type: string
-  issue_comment:
-    types: [created]
-
-permissions:
-  contents: read
-  pull-requests: write
-  issues: write
-  checks: write
-  actions: write
-
 jobs:
   check:
     if: |
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'issue_comment' &&
        github.event.issue.pull_request &&
-       contains(github.event.comment.body, '@balin'))
+       contains(github.event.comment.body, '@merge-check'))
     uses: Shared-Project-Helpers/workflows/.github/workflows/claude-merge-check.yml@main
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
     with:
       pr_number: ${{ github.event.inputs.pr_number || github.event.issue.number }}
-      checker_name: 'Balin'
-      required_reviewer_names: 'Dwalin,Oin'
+      checker_name: 'Merge Checker'
+      required_reviewer_names: 'Performance Reviewer,Safety Reviewer,Test Reviewer'
 ```
 
 **Inputs:**
@@ -453,27 +357,15 @@ jobs:
 |-------|----------|---------|-------------|
 | `pr_number` | Yes | - | Pull request number to check |
 | `model` | No | `claude-opus-4-6` | Claude model to use |
-| `checker_name` | No | `Balin` | Display name for the checker persona |
+| `checker_name` | No | `Merge Checker` | Display name for the checker persona |
 | `app_id` | No | `''` | GitHub App ID for custom bot identity |
-| `required_reviewer_names` | No | `''` | Comma-separated list of required reviewer persona names (e.g., `Dwalin,Oin`) |
-| `trigger_fix_on_behind` | No | `'true'` | Dispatch fix workflow when branch is behind base |
-| `fix_workflow_id` | No | `claude-fix.yml` | Fix workflow filename to dispatch |
+| `required_reviewer_names` | No | `''` | Comma-separated required reviewer names |
+| `trigger_fix_on_behind` | No | `'true'` | Dispatch fix workflow when branch is behind |
+| `fix_workflow_id` | No | `claude-fix.yml` | Fix workflow to dispatch |
 
-**Secrets:**
+**Secrets:** `ANTHROPIC_API_KEY` (required), `APP_PRIVATE_KEY` (optional)
 
-| Secret | Required | Description |
-|--------|----------|-------------|
-| `ANTHROPIC_API_KEY` | Yes | Anthropic API key for Claude |
-| `APP_PRIVATE_KEY` | No | GitHub App private key for custom bot identity |
-
-**Outputs:**
-
-| Output | Description |
-|--------|-------------|
-| `ready` | Whether the PR is ready to merge (`true`/`false`) |
-| `blocking_issues` | Number of blocking issues found |
-| `behind` | Whether the PR branch is behind the base (`true`/`false`) |
-| `head_ref` | PR head branch ref |
+**Outputs:** `ready`, `blocking_issues`, `behind`, `head_ref`
 
 ---
 
@@ -487,9 +379,10 @@ jobs:
 
 ## Triggering
 
-- **Thorin (Review)**: Runs automatically on PR open/update, or comment `@claude` on a PR
-- **Dwalin (Perf Review)**: Runs automatically on PR open/update, or comment `@dwalin` on a PR
-- **Oin (Safety Review)**: Runs automatically on PR open/update, or comment `@oin` on a PR
-- **Gloin (Fix)**: Dispatched automatically by Thorin on `REQUEST_CHANGES`, or comment `@claude fix` on a PR
-- **Nori (Issue Fix)**: Dispatched automatically by Dwalin/Oin on `REQUEST_CHANGES`, or comment `@nori` on a PR
-- **Balin (Merge Check)**: Dispatched automatically by Thorin on `APPROVE`, or comment `@balin` on a PR
+- **General Reviewer**: Runs automatically on PR open/update, or comment `@review`
+- **Performance Reviewer**: Runs automatically on PR open/update, or comment `@perf-review`
+- **Safety Reviewer**: Runs automatically on PR open/update, or comment `@safety-review`
+- **Test Reviewer**: Runs automatically on PR open/update, or comment `@test-review`
+- **Fix Agent**: Dispatched automatically by General Reviewer on `REQUEST_CHANGES`, or comment `@fix`
+- **Issue Fix Agent**: Dispatched automatically by other reviewers on `REQUEST_CHANGES`, or comment `@issue-fix`
+- **Merge Checker**: Dispatched automatically by General Reviewer on `APPROVE`, or comment `@merge-check`

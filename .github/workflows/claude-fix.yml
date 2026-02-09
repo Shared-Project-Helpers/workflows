@@ -20,17 +20,17 @@ on:
       commit_author_name:
         description: 'Git author name for fix commits'
         required: false
-        default: 'Claude Fix Agent'
+        default: 'Fix Agent'
         type: string
       commit_author_email:
         description: 'Git author email for fix commits'
         required: false
-        default: 'claude-fix-agent@users.noreply.github.com'
+        default: 'fix-agent@users.noreply.github.com'
         type: string
       fixer_name:
         description: 'Display name for the fix agent persona'
         required: false
-        default: 'Claude Fix Agent'
+        default: 'Fix Agent'
         type: string
       app_id:
         description: 'GitHub App ID for custom bot identity (leave empty to use github-actions[bot])'

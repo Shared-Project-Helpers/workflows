@@ -36,7 +36,7 @@ on:
       reviewer_name:
         description: 'Display name for the code reviewer persona'
         required: false
-        default: 'Claude'
+        default: 'General Reviewer'
         type: string
       app_id:
         description: 'GitHub App ID for custom bot identity (leave empty to use github-actions[bot])'

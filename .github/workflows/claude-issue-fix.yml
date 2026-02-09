@@ -20,17 +20,17 @@ on:
       commit_author_name:
         description: 'Git author name for fix commits'
         required: false
-        default: 'Nori'
+        default: 'Issue Fix Agent'
         type: string
       commit_author_email:
         description: 'Git author email for fix commits'
         required: false
-        default: 'nori@users.noreply.github.com'
+        default: 'issue-fix-agent@users.noreply.github.com'
         type: string
       fixer_name:
         description: 'Display name for the fix agent persona'
         required: false
-        default: 'Nori'
+        default: 'Issue Fix Agent'
         type: string
       app_id:
         description: 'GitHub App ID for custom bot identity (leave empty to use github-actions[bot])'
@@ -152,7 +152,7 @@ jobs:
             });
 
             // Collect feedback from ALL reviewers (Thorin, Dwalin, Oin)
-            const reviewKeywords = ['Code Review', 'Performance Review', 'Safety & Privacy Review'];
+            const reviewKeywords = ['Code Review', 'Performance Review', 'Safety & Privacy Review', 'Test Review'];
             const reviewComments = comments.filter(c =>
               reviewKeywords.some(keyword => c.body.includes(keyword))
             );
@@ -210,12 +210,13 @@ jobs:
           model = os.environ.get('MODEL', 'claude-opus-4-6')
           max_tokens = int(os.environ.get('MAX_TOKENS', '8192'))
 
-          prompt = f"""You are Nori, a senior developer who fixes code review issues from multiple reviewers.
+          prompt = f"""You are a senior developer who fixes code review issues from multiple reviewers.
 
-          You have feedback from up to three specialized reviewers:
-          - **Thorin** (general code quality, bugs, logic)
-          - **Dwalin** (performance, efficiency, cost)
-          - **Oin** (security, privacy, safety)
+          You have feedback from up to four specialized reviewers:
+          - **General Reviewer** (code quality, bugs, logic)
+          - **Performance Reviewer** (performance, efficiency, cost)
+          - **Safety Reviewer** (security, privacy, safety)
+          - **Test Reviewer** (test coverage, test quality)
 
           ## All Review Feedback
           {review_body}
@@ -228,11 +229,12 @@ jobs:
           ## Instructions
           1. Analyze ALL review feedback from all reviewers
           2. Prioritize fixes in this order:
-             a. Critical security issues (Oin) — fix immediately
-             b. Critical performance issues (Dwalin) — fix immediately
-             c. Critical quality issues (Thorin) — fix immediately
-             d. Major issues in same priority order
-             e. Minor issues if straightforward
+             a. Critical security issues (Safety Reviewer) — fix immediately
+             b. Critical performance issues (Performance Reviewer) — fix immediately
+             c. Critical quality issues (General Reviewer) — fix immediately
+             d. Critical test issues (Test Reviewer) — fix immediately
+             e. Major issues in same priority order
+             f. Minor issues if straightforward
           3. For issues that CANNOT be fixed within this PR (too complex, requires architectural changes, needs discussion), add them to the "deferred" array
 
           Respond with a JSON object:
@@ -241,7 +243,7 @@ jobs:
               {{
                 "file": "path/to/file",
                 "description": "What this fix does",
-                "reviewer": "Thorin | Dwalin | Oin",
+                "reviewer": "General Reviewer | Performance Reviewer | Safety Reviewer | Test Reviewer",
                 "severity": "critical | major | minor",
                 "search": "exact code to find (multiple lines ok)",
                 "replace": "exact replacement code"
@@ -251,7 +253,7 @@ jobs:
               {{
                 "title": "Short issue title",
                 "description": "Detailed description of what needs to be done",
-                "reviewer": "Thorin | Dwalin | Oin",
+                "reviewer": "General Reviewer | Performance Reviewer | Safety Reviewer | Test Reviewer",
                 "severity": "critical | major | minor",
                 "category": "Category of the issue"
               }}

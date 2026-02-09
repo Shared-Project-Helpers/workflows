@@ -1,0 +1,419 @@
+name: Claude Test Review
+
+on:
+  workflow_call:
+    inputs:
+      model:
+        description: 'Claude model to use'
+        required: false
+        default: 'claude-opus-4-6'
+        type: string
+      test_guidelines:
+        description: 'Additional test review guidelines (appended to defaults)'
+        required: false
+        default: ''
+        type: string
+      diff_limit:
+        description: 'Max diff size in bytes'
+        required: false
+        default: '50000'
+        type: string
+      excluded_files:
+        description: 'Git pathspec for excluded files'
+        required: false
+        default: ':!*.lock :!package-lock.json'
+        type: string
+      reviewer_name:
+        description: 'Display name for the test reviewer persona'
+        required: false
+        default: 'Test Reviewer'
+        type: string
+      app_id:
+        description: 'GitHub App ID for custom bot identity (leave empty to use github-actions[bot])'
+        required: false
+        default: ''
+        type: string
+      trigger_fix_on_request_changes:
+        description: 'Trigger fix workflow when review requests changes'
+        required: false
+        default: 'true'
+        type: string
+      fix_workflow_id:
+        description: 'Fix workflow filename to dispatch'
+        required: false
+        default: 'claude-issue-fix.yml'
+        type: string
+      test_command:
+        description: 'Command to run tests (empty = skip test execution)'
+        required: false
+        default: ''
+        type: string
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: true
+      APP_PRIVATE_KEY:
+        required: false
+        description: 'GitHub App private key for custom bot identity'
+    outputs:
+      decision:
+        description: 'Review decision (APPROVE, REQUEST_CHANGES, or COMMENT)'
+        value: ${{ jobs.review.outputs.decision }}
+      pr_number:
+        description: 'Pull request number'
+        value: ${{ jobs.review.outputs.pr_number }}
+      head_ref:
+        description: 'PR head branch ref'
+        value: ${{ jobs.review.outputs.head_ref }}
+      tests_passed:
+        description: 'Whether tests passed (true/false/skipped)'
+        value: ${{ jobs.review.outputs.tests_passed }}
+
+jobs:
+  review:
+    name: Test Review
+    runs-on: ubuntu-latest
+    outputs:
+      decision: ${{ steps.review.outputs.decision }}
+      pr_number: ${{ steps.pr.outputs.number }}
+      head_ref: ${{ steps.pr.outputs.head_ref }}
+      tests_passed: ${{ steps.run-tests.outputs.passed }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.ref || github.head_ref }}
+
+      - name: Get PR info
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            let prNumber, baseSha, headSha, headRef;
+
+            if (context.eventName === 'pull_request' || context.eventName === 'pull_request_target') {
+              prNumber = context.payload.pull_request.number;
+              baseSha = context.payload.pull_request.base.sha;
+              headSha = context.payload.pull_request.head.sha;
+              headRef = context.payload.pull_request.head.ref;
+            } else {
+              prNumber = context.payload.issue.number;
+              const { data: pr } = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: prNumber
+              });
+              baseSha = pr.base.sha;
+              headSha = pr.head.sha;
+              headRef = pr.head.ref;
+            }
+
+            core.setOutput('number', prNumber);
+            core.setOutput('base_sha', baseSha);
+            core.setOutput('head_sha', headSha);
+            core.setOutput('head_ref', headRef);
+
+      - name: Get diff
+        id: diff
+        run: |
+          DELIMITER="DIFF_$(openssl rand -hex 16)"
+          echo "diff<<${DELIMITER}" >> $GITHUB_OUTPUT
+          git diff ${{ steps.pr.outputs.base_sha }}..${{ steps.pr.outputs.head_sha }} -- . ${{ inputs.excluded_files }} | head -c ${{ inputs.diff_limit }} >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          echo "${DELIMITER}" >> $GITHUB_OUTPUT
+
+      - name: Detect test files and structure
+        id: test-detection
+        run: |
+          # Detect test frameworks and files
+          TEST_INFO=""
+
+          # Find test files in the repo
+          TEST_FILES=$(find . -type f \( \
+            -name "*Test.kt" -o -name "*Tests.kt" -o -name "*Spec.kt" \
+            -o -name "*Test.java" -o -name "*Tests.java" \
+            -o -name "*Test.swift" -o -name "*Tests.swift" \
+            -o -name "*.test.ts" -o -name "*.test.js" -o -name "*.spec.ts" -o -name "*.spec.js" \
+            -o -name "test_*.py" -o -name "*_test.py" -o -name "*_test.go" \
+          \) 2>/dev/null | head -50)
+
+          if [ -n "$TEST_FILES" ]; then
+            TEST_INFO="## Existing Test Files\n$(echo "$TEST_FILES" | head -50)\n"
+          else
+            TEST_INFO="## Existing Test Files\nNo test files found in the repository.\n"
+          fi
+
+          # Check for test configuration files
+          CONFIG_FILES=""
+          for f in build.gradle.kts build.gradle pom.xml package.json Cargo.toml go.mod pytest.ini setup.cfg pyproject.toml; do
+            if [ -f "$f" ]; then
+              CONFIG_FILES="$CONFIG_FILES $f"
+            fi
+          done
+
+          if [ -n "$CONFIG_FILES" ]; then
+            TEST_INFO="$TEST_INFO\n## Build/Test Config Files Found\n$CONFIG_FILES\n"
+          fi
+
+          # Count test files changed in this PR
+          CHANGED_TEST_FILES=$(git diff --name-only ${{ steps.pr.outputs.base_sha }}..${{ steps.pr.outputs.head_sha }} | grep -iE '(test|spec|_test\.|\.test\.)' | head -20)
+          CHANGED_SOURCE_FILES=$(git diff --name-only ${{ steps.pr.outputs.base_sha }}..${{ steps.pr.outputs.head_sha }} | grep -viE '(test|spec|_test\.|\.test\.|\.md$|\.yml$|\.yaml$|\.json$|\.lock$)' | head -20)
+
+          TEST_INFO="$TEST_INFO\n## Changed Files in This PR\n"
+          TEST_INFO="$TEST_INFO\n### Source Files Changed\n${CHANGED_SOURCE_FILES:-None}\n"
+          TEST_INFO="$TEST_INFO\n### Test Files Changed\n${CHANGED_TEST_FILES:-None}\n"
+
+          DELIMITER="TEST_$(openssl rand -hex 16)"
+          echo "test_info<<${DELIMITER}" >> $GITHUB_OUTPUT
+          echo -e "$TEST_INFO" >> $GITHUB_OUTPUT
+          echo "${DELIMITER}" >> $GITHUB_OUTPUT
+
+      - name: Run tests
+        id: run-tests
+        if: inputs.test_command != ''
+        continue-on-error: true
+        run: |
+          echo "Running: ${{ inputs.test_command }}"
+          if ${{ inputs.test_command }} > test_output.txt 2>&1; then
+            echo "passed=true" >> $GITHUB_OUTPUT
+            echo "Tests passed"
+          else
+            echo "passed=false" >> $GITHUB_OUTPUT
+            echo "Tests failed"
+          fi
+
+          # Capture last 100 lines of output for context
+          DELIMITER="OUT_$(openssl rand -hex 16)"
+          echo "output<<${DELIMITER}" >> $GITHUB_OUTPUT
+          tail -100 test_output.txt >> $GITHUB_OUTPUT
+          echo "${DELIMITER}" >> $GITHUB_OUTPUT
+
+      - name: Set test skipped if no command
+        id: test-skip
+        if: inputs.test_command == ''
+        run: |
+          echo "passed=skipped" >> $GITHUB_OUTPUT
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Review tests with Claude
+        id: review
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          PR_DIFF: ${{ steps.diff.outputs.diff }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          MODEL: ${{ inputs.model }}
+          EXTRA_GUIDELINES: ${{ inputs.test_guidelines }}
+          TEST_INFO: ${{ steps.test-detection.outputs.test_info }}
+          TEST_PASSED: ${{ steps.run-tests.outputs.passed || steps.test-skip.outputs.passed }}
+          TEST_OUTPUT: ${{ steps.run-tests.outputs.output }}
+        run: |
+          pip install anthropic
+          python << 'PYTHON_SCRIPT'
+          import anthropic
+          import os
+          import json
+          import re
+
+          client = anthropic.Anthropic()
+
+          diff = os.environ.get('PR_DIFF', '')
+          pr_number = os.environ.get('PR_NUMBER', '')
+          model = os.environ.get('MODEL', 'claude-opus-4-6')
+          extra_guidelines = os.environ.get('EXTRA_GUIDELINES', '')
+          test_info = os.environ.get('TEST_INFO', '')
+          test_passed = os.environ.get('TEST_PASSED', 'skipped')
+          test_output = os.environ.get('TEST_OUTPUT', '')
+
+          extra_section = f"\n\n## Project-Specific Test Guidelines\n{extra_guidelines}" if extra_guidelines else ""
+
+          test_execution_section = ""
+          if test_passed == 'true':
+              test_execution_section = "\n## Test Execution Result\nAll tests PASSED.\n"
+          elif test_passed == 'false':
+              test_execution_section = f"\n## Test Execution Result\nTests FAILED.\n\nOutput (last 100 lines):\n```\n{test_output[:5000]}\n```\n"
+          else:
+              test_execution_section = "\n## Test Execution Result\nTests were not executed (no test command configured).\n"
+
+          prompt = f"""You are a senior test engineer. Review this pull request diff focusing EXCLUSIVELY on testing concerns.
+
+          ## Test Review Guidelines
+          - **Missing tests**: New code paths, functions, classes, or modules without corresponding tests
+          - **Test coverage gaps**: Edge cases, error paths, boundary conditions not tested
+          - **Test quality**: Tests that don't actually verify behavior (e.g., no assertions, testing implementation details)
+          - **Test maintenance**: Brittle tests, hardcoded values, tests coupled to implementation
+          - **Flaky test risk**: Tests relying on timing, external services, or non-deterministic behavior
+          - **Test organization**: Tests in wrong location, missing test utilities, duplicated test setup
+          - **Integration tests**: Missing integration tests for API endpoints, database operations, or cross-module interactions
+          - **Test execution**: Whether existing tests still pass after changes
+          {extra_section}
+
+          {test_info}
+          {test_execution_section}
+
+          ## Severity Definitions
+          - **critical**: Test failures exist, or critical business logic has zero test coverage
+          - **major**: Significant new functionality without tests, or tests that give false confidence
+          - **minor**: Missing edge case tests, test style improvements
+
+          ## Response Format
+          Respond with a JSON object:
+          {{
+            "decision": "APPROVE" | "REQUEST_CHANGES" | "COMMENT",
+            "summary": "Brief summary of the test review",
+            "issues": [
+              {{
+                "severity": "critical" | "major" | "minor" | "suggestion",
+                "category": "missing-tests" | "test-quality" | "test-coverage" | "test-maintenance" | "flaky-tests" | "test-organization" | "test-execution",
+                "file": "path/to/file",
+                "line": 42,
+                "description": "Description of the testing issue",
+                "suggestion": "How to fix it (include example test code if helpful)"
+              }}
+            ]
+          }}
+
+          If tests are adequate for the changes, set decision to "APPROVE".
+          Use "REQUEST_CHANGES" for:
+          - Test failures (critical)
+          - Critical business logic with zero test coverage (critical)
+          - Major new features with no tests at all (major)
+          Do NOT block for minor test improvements or style preferences.
+          Do NOT review for general code quality, performance, or security — those are handled by separate reviewers.
+
+          ## Diff
+          ```diff
+          {diff[:40000]}
+          ```
+          """
+
+          response = client.messages.create(
+              model=model,
+              max_tokens=4096,
+              messages=[{"role": "user", "content": prompt}]
+          )
+
+          result = response.content[0].text
+
+          try:
+              json_match = re.search(r'\{[\s\S]*\}', result)
+              if json_match:
+                  review_data = json.loads(json_match.group())
+              else:
+                  review_data = {"decision": "COMMENT", "summary": result, "issues": []}
+          except:
+              review_data = {"decision": "COMMENT", "summary": result, "issues": []}
+
+          # Write outputs — summary must be single-line
+          summary = review_data.get('summary', 'Test review completed')
+          summary = re.sub(r'\s+', ' ', summary).strip()[:500]
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f"decision={review_data.get('decision', 'COMMENT')}\n")
+              f.write(f"summary={summary}\n")
+
+          with open('review_result.json', 'w') as f:
+              json.dump(review_data, f)
+
+          print(json.dumps(review_data, indent=2))
+          PYTHON_SCRIPT
+
+      - name: Generate app token
+        id: app-token
+        if: inputs.app_id != ''
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ inputs.app_id }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: Post review comment
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ steps.app-token.outputs.token || github.token }}
+          script: |
+            const fs = require('fs');
+            const reviewData = JSON.parse(fs.readFileSync('review_result.json', 'utf8'));
+
+            const reviewerName = '${{ inputs.reviewer_name }}';
+            const testPassed = '${{ steps.run-tests.outputs.passed || steps.test-skip.outputs.passed }}';
+
+            let body = `## ${reviewerName}'s Test Review\n\n`;
+            body += `**Decision:** ${reviewData.decision}\n\n`;
+
+            // Test execution status
+            if (testPassed === 'true') {
+              body += `\u{2705} **Test execution:** All tests passed\n\n`;
+            } else if (testPassed === 'false') {
+              body += `\u{274C} **Test execution:** Tests failed\n\n`;
+            } else {
+              body += `\u{23ED}\u{FE0F} **Test execution:** Not configured\n\n`;
+            }
+
+            body += `### Summary\n${reviewData.summary}\n\n`;
+
+            if (reviewData.issues && reviewData.issues.length > 0) {
+              body += `### Testing Issues Found\n\n`;
+              for (const issue of reviewData.issues) {
+                const emoji = {
+                  critical: '\u{1F534}',
+                  major: '\u{1F7E0}',
+                  minor: '\u{1F7E1}',
+                  suggestion: '\u{1F4A1}'
+                }[issue.severity] || '\u{1F4DD}';
+
+                const category = issue.category ? ` [${issue.category}]` : '';
+                body += `${emoji} **${issue.severity.toUpperCase()}**${category} `;
+                if (issue.file) body += `in \`${issue.file}\``;
+                if (issue.line) body += ` (line ${issue.line})`;
+                body += `\n`;
+                body += `> ${issue.description}\n`;
+                if (issue.suggestion) {
+                  body += `\n**Suggestion:** ${issue.suggestion}\n`;
+                }
+                body += `\n`;
+              }
+            }
+
+            const prUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/pull/${{ steps.pr.outputs.number }}`;
+            body += `\n---\n*Reviewed by ${reviewerName} (Testing)*\n\n**PR:** ${prUrl}`;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: ${{ steps.pr.outputs.number }},
+              body: body
+            });
+
+            // Submit formal review if approving or requesting changes
+            if (reviewData.decision === 'APPROVE' || reviewData.decision === 'REQUEST_CHANGES') {
+              try {
+                await github.rest.pulls.createReview({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: ${{ steps.pr.outputs.number }},
+                  event: reviewData.decision,
+                  body: `${reviewerName} (Testing): ${reviewData.summary}`
+                });
+              } catch (error) {
+                console.log(`Note: Could not submit formal review (${error.message}). The review comment was posted successfully.`);
+              }
+            }
+
+      - name: Trigger fix workflow
+        if: steps.review.outputs.decision == 'REQUEST_CHANGES' && inputs.trigger_fix_on_request_changes == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: '${{ inputs.fix_workflow_id }}',
+              ref: '${{ steps.pr.outputs.head_ref }}',
+              inputs: {
+                pr_number: '${{ steps.pr.outputs.number }}'
+              }
+            });

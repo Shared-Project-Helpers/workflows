@@ -26,7 +26,7 @@ on:
       reviewer_name:
         description: 'Display name for the performance reviewer persona'
         required: false
-        default: 'Dwalin'
+        default: 'Performance Reviewer'
         type: string
       app_id:
         description: 'GitHub App ID for custom bot identity (leave empty to use github-actions[bot])'
@@ -143,7 +143,7 @@ jobs:
 
           extra_section = f"\n\n## Project-Specific Performance Guidelines\n{extra_guidelines}" if extra_guidelines else ""
 
-          prompt = f"""You are Dwalin, a senior performance engineer. Review this pull request diff focusing EXCLUSIVELY on performance, efficiency, and cost concerns.
+          prompt = f"""You are a senior performance engineer. Review this pull request diff focusing EXCLUSIVELY on performance, efficiency, and cost concerns.
 
           ## Performance Review Guidelines
           - **Client-server efficiency**: Unnecessary API calls, missing pagination, over-fetching data

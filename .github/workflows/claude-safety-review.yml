@@ -26,7 +26,7 @@ on:
       reviewer_name:
         description: 'Display name for the safety reviewer persona'
         required: false
-        default: 'Oin'
+        default: 'Safety Reviewer'
         type: string
       app_id:
         description: 'GitHub App ID for custom bot identity (leave empty to use github-actions[bot])'
@@ -281,7 +281,7 @@ jobs:
           extra_section = f"\n\n## Project-Specific Safety Guidelines\n{extra_guidelines}" if extra_guidelines else ""
           tool_section = f"\n\n## Automated Scan Results\nThe following tool scans were run before your review. Use these as additional signal — confirm or dispute each finding.\n\n{tool_context}" if tool_context else ""
 
-          prompt = f"""You are Oin, a senior security and privacy engineer. Review this pull request diff focusing EXCLUSIVELY on security, privacy, and safety concerns.
+          prompt = f"""You are a senior security and privacy engineer. Review this pull request diff focusing EXCLUSIVELY on security, privacy, and safety concerns.
 
           ## Safety & Privacy Review Guidelines
           - **Secrets & credentials**: Hardcoded API keys, passwords, tokens, connection strings

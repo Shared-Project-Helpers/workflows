@@ -4,12 +4,13 @@ Reusable GitHub Actions workflows for Claude-powered CI/CD automation (code revi
 
 ## Project structure
 
-- `.github/workflows/claude-review.yml` — "Thorin" automated PR code review
-- `.github/workflows/claude-perf-review.yml` — "Dwalin" performance review
-- `.github/workflows/claude-safety-review.yml` — "Oin" safety & privacy review (with Semgrep + GitLeaks)
-- `.github/workflows/claude-fix.yml` — "Gloin" applies fixes from Thorin's feedback
-- `.github/workflows/claude-issue-fix.yml` — "Nori" applies fixes from all reviewers, creates GitHub Issues for deferred items
-- `.github/workflows/claude-merge-check.yml` — "Balin" merge readiness assessment (supports required reviewer approvals)
+- `.github/workflows/claude-review.yml` — General Reviewer: automated PR code review
+- `.github/workflows/claude-perf-review.yml` — Performance Reviewer: performance, efficiency, cost review
+- `.github/workflows/claude-safety-review.yml` — Safety Reviewer: security & privacy review (with Semgrep + GitLeaks)
+- `.github/workflows/claude-test-review.yml` — Test Reviewer: test coverage and quality review
+- `.github/workflows/claude-fix.yml` — Fix Agent: applies fixes from General Reviewer's feedback
+- `.github/workflows/claude-issue-fix.yml` — Issue Fix Agent: applies fixes from all reviewers, creates GitHub Issues for deferred items
+- `.github/workflows/claude-merge-check.yml` — Merge Checker: merge readiness assessment (supports required reviewer approvals)
 - `README.md` — Usage docs and configuration reference
 
 ## Tech stack
@@ -24,7 +25,7 @@ Reusable GitHub Actions workflows for Claude-powered CI/CD automation (code revi
 - Workflows are designed to be called via `uses:` from consumer repos (reusable workflows)
 - Authentication uses either `GITHUB_TOKEN` or GitHub App tokens (`create-github-app-token@v1`)
 - Claude API calls use the `anthropic` Python SDK installed at runtime
-- Bot personas (e.g., "Balin") are configured per-workflow with custom names/avatars
+- Agent roles (e.g., "Merge Checker") are configured per-workflow with custom display names
 - Formal GitHub reviews (APPROVE/REQUEST_CHANGES) are submitted, not just comments
 
 ## Working with this repo
