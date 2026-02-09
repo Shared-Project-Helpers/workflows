@@ -22,6 +22,11 @@ on:
         required: false
         default: ''
         type: string
+      required_reviewer_names:
+        description: 'Comma-separated list of required reviewer persona names to check for approval (e.g. "Dwalin,Oin"). Matched against review comment bodies.'
+        required: false
+        default: ''
+        type: string
       trigger_fix_on_behind:
         description: 'Trigger fix workflow when branch is behind base'
         required: false
@@ -186,16 +191,54 @@ jobs:
             const approved = states.filter(s => s.state === 'APPROVED').length;
             const changesRequested = states.filter(s => s.state === 'CHANGES_REQUESTED').length;
 
+            // Check required reviewer approvals by matching persona names in review bodies
+            const requiredNames = '${{ inputs.required_reviewer_names }}'.split(',').map(n => n.trim()).filter(Boolean);
+            const requiredReviewerStatus = {};
+
+            if (requiredNames.length > 0) {
+              // Also check PR comments for reviewer personas
+              const { data: comments } = await github.rest.issues.listComments({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: ${{ steps.pr.outputs.number }}
+              });
+
+              for (const name of requiredNames) {
+                // Check formal reviews for persona name in body
+                const formalApproval = reviews.some(r =>
+                  r.state === 'APPROVED' && r.body && r.body.includes(name)
+                );
+
+                // Check comments for approval pattern (e.g., "Dwalin's Performance Review" with "APPROVE")
+                const commentApproval = comments.some(c =>
+                  c.body.includes(name) &&
+                  c.body.includes('Review') &&
+                  c.body.includes('**Decision:** APPROVE')
+                );
+
+                requiredReviewerStatus[name] = formalApproval || commentApproval ? 'approved' : 'pending';
+              }
+            }
+
+            const allRequiredApproved = requiredNames.length === 0 ||
+              Object.values(requiredReviewerStatus).every(s => s === 'approved');
+
             const summary = {
               total: states.length,
               approved,
               changes_requested: changesRequested,
               has_approvals: approved > 0,
               has_change_requests: changesRequested > 0,
-              reviewers: states
+              reviewers: states,
+              required_reviewers: requiredReviewerStatus,
+              all_required_approved: allRequiredApproved
             };
 
             core.setOutput('summary', JSON.stringify(summary));
+
+            // Write to file for later steps to read safely
+            const fs = require('fs');
+            fs.writeFileSync('reviews_summary.json', JSON.stringify(summary));
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -220,6 +263,7 @@ jobs:
           CHECKS_DETAILS: ${{ steps.checks.outputs.details }}
           REVIEWS_SUMMARY: ${{ steps.reviews.outputs.summary }}
           CHECKER_NAME: ${{ inputs.checker_name }}
+          REQUIRED_REVIEWER_NAMES: ${{ inputs.required_reviewer_names }}
         run: |
           pip install anthropic
           python << 'PYTHON_SCRIPT'
@@ -244,6 +288,15 @@ jobs:
           reviews_summary = json.loads(os.environ.get('REVIEWS_SUMMARY', '{}'))
           model = os.environ.get('MODEL', 'claude-opus-4-6')
           checker_name = os.environ.get('CHECKER_NAME', 'Balin')
+
+          required_reviewer_names = os.environ.get('REQUIRED_REVIEWER_NAMES', '')
+
+          required_section = ""
+          if required_reviewer_names:
+              required_section = f"""
+          5. Have all required specialized reviewers approved? The required reviewers are: {required_reviewer_names}
+             Check the "required_reviewers" field in the reviews data — all must show "approved".
+             If any show "pending", that reviewer has not yet approved and the PR is NOT ready."""
 
           prompt = f"""You are {checker_name}, a merge readiness assessment agent. You are wise and practical,
           providing clear assessments of whether a pull request is ready to merge.
@@ -276,6 +329,7 @@ jobs:
           2. Are there outstanding change requests from human reviewers? (bot reviews are excluded)
           3. Are there merge conflicts? (mergeable=false or mergeable_state=dirty)
           4. Is this a draft?
+          {required_section}
 
           Respond with JSON:
           {{
@@ -286,7 +340,8 @@ jobs:
               "ci_passing": true/false,
               "no_merge_conflicts": true/false,
               "not_draft": true/false,
-              "no_change_requests": true/false
+              "no_change_requests": true/false,
+              "required_reviewers_approved": true/false
             }},
             "blocking_issues": ["list of blockers, empty if ready"],
             "warnings": ["non-blocking concerns, optional"]
@@ -353,13 +408,32 @@ jobs:
               { key: 'ci_passing', label: 'All CI checks passing' },
               { key: 'no_change_requests', label: 'No outstanding change requests' },
               { key: 'no_merge_conflicts', label: 'No merge conflicts' },
-              { key: 'not_draft', label: 'Not a draft PR' }
+              { key: 'not_draft', label: 'Not a draft PR' },
+              { key: 'required_reviewers_approved', label: 'All required reviewers approved' }
             ];
 
             for (const item of checkItems) {
               const passed = checks[item.key];
               const status = passed === true ? '✅' : passed === false ? '❌' : '❓';
               body += `- ${status} ${item.label}\n`;
+            }
+
+            // Show required reviewer status if configured
+            const requiredReviewers = '${{ inputs.required_reviewer_names }}'.split(',').map(n => n.trim()).filter(Boolean);
+            if (requiredReviewers.length > 0) {
+              body += `\n### Required Reviewer Approvals\n`;
+              try {
+                const reviewsSummary = JSON.parse(fs.readFileSync('reviews_summary.json', 'utf8'));
+                const reqStatus = reviewsSummary.required_reviewers || {};
+                for (const name of requiredReviewers) {
+                  const status = reqStatus[name] === 'approved' ? '✅' : '⏳';
+                  body += `- ${status} ${name}\n`;
+                }
+              } catch (e) {
+                for (const name of requiredReviewers) {
+                  body += `- ❓ ${name}\n`;
+                }
+              }
             }
 
             if (assessment.blocking_issues && assessment.blocking_issues.length > 0) {

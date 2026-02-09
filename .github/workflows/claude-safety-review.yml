@@ -1,0 +1,455 @@
+name: Claude Safety & Privacy Review
+
+on:
+  workflow_call:
+    inputs:
+      model:
+        description: 'Claude model to use'
+        required: false
+        default: 'claude-opus-4-6'
+        type: string
+      safety_guidelines:
+        description: 'Additional safety/privacy review guidelines (appended to defaults)'
+        required: false
+        default: ''
+        type: string
+      diff_limit:
+        description: 'Max diff size in bytes'
+        required: false
+        default: '50000'
+        type: string
+      excluded_files:
+        description: 'Git pathspec for excluded files'
+        required: false
+        default: ':!*.lock :!package-lock.json'
+        type: string
+      reviewer_name:
+        description: 'Display name for the safety reviewer persona'
+        required: false
+        default: 'Oin'
+        type: string
+      app_id:
+        description: 'GitHub App ID for custom bot identity (leave empty to use github-actions[bot])'
+        required: false
+        default: ''
+        type: string
+      trigger_fix_on_request_changes:
+        description: 'Trigger fix workflow when review requests changes'
+        required: false
+        default: 'true'
+        type: string
+      fix_workflow_id:
+        description: 'Fix workflow filename to dispatch'
+        required: false
+        default: 'claude-issue-fix.yml'
+        type: string
+      run_semgrep:
+        description: 'Run Semgrep SAST scan before Claude review'
+        required: false
+        default: 'true'
+        type: string
+      run_gitleaks:
+        description: 'Run GitLeaks secrets scan before Claude review'
+        required: false
+        default: 'true'
+        type: string
+      semgrep_rules:
+        description: 'Semgrep ruleset to use (default: auto)'
+        required: false
+        default: 'auto'
+        type: string
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: true
+      APP_PRIVATE_KEY:
+        required: false
+        description: 'GitHub App private key for custom bot identity'
+    outputs:
+      decision:
+        description: 'Review decision (APPROVE, REQUEST_CHANGES, or COMMENT)'
+        value: ${{ jobs.review.outputs.decision }}
+      pr_number:
+        description: 'Pull request number'
+        value: ${{ jobs.review.outputs.pr_number }}
+      head_ref:
+        description: 'PR head branch ref'
+        value: ${{ jobs.review.outputs.head_ref }}
+      semgrep_findings:
+        description: 'Number of Semgrep findings'
+        value: ${{ jobs.review.outputs.semgrep_findings }}
+      gitleaks_findings:
+        description: 'Number of GitLeaks findings'
+        value: ${{ jobs.review.outputs.gitleaks_findings }}
+
+jobs:
+  review:
+    name: Safety & Privacy Review
+    runs-on: ubuntu-latest
+    outputs:
+      decision: ${{ steps.review.outputs.decision }}
+      pr_number: ${{ steps.pr.outputs.number }}
+      head_ref: ${{ steps.pr.outputs.head_ref }}
+      semgrep_findings: ${{ steps.semgrep.outputs.findings_count }}
+      gitleaks_findings: ${{ steps.gitleaks.outputs.findings_count }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.ref || github.head_ref }}
+
+      - name: Get PR info
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            let prNumber, baseSha, headSha, headRef;
+
+            if (context.eventName === 'pull_request' || context.eventName === 'pull_request_target') {
+              prNumber = context.payload.pull_request.number;
+              baseSha = context.payload.pull_request.base.sha;
+              headSha = context.payload.pull_request.head.sha;
+              headRef = context.payload.pull_request.head.ref;
+            } else {
+              prNumber = context.payload.issue.number;
+              const { data: pr } = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: prNumber
+              });
+              baseSha = pr.base.sha;
+              headSha = pr.head.sha;
+              headRef = pr.head.ref;
+            }
+
+            core.setOutput('number', prNumber);
+            core.setOutput('base_sha', baseSha);
+            core.setOutput('head_sha', headSha);
+            core.setOutput('head_ref', headRef);
+
+      - name: Get diff
+        id: diff
+        run: |
+          DIFF=$(git diff ${{ steps.pr.outputs.base_sha }}..${{ steps.pr.outputs.head_sha }} -- . ${{ inputs.excluded_files }})
+          echo "diff<<EOF" >> $GITHUB_OUTPUT
+          echo "$DIFF" | head -c ${{ inputs.diff_limit }} >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Run Semgrep SAST
+        id: semgrep
+        if: inputs.run_semgrep == 'true'
+        continue-on-error: true
+        run: |
+          pip install semgrep
+          semgrep scan --config ${{ inputs.semgrep_rules }} --json --quiet . > semgrep_results.json 2>/dev/null || true
+
+          if [ -f semgrep_results.json ]; then
+            FINDINGS=$(python3 -c "
+          import json
+          try:
+              data = json.load(open('semgrep_results.json'))
+              results = data.get('results', [])
+              print(len(results))
+          except:
+              print('0')
+          ")
+            echo "findings_count=$FINDINGS" >> $GITHUB_OUTPUT
+            echo "Semgrep found $FINDINGS findings"
+          else
+            echo "findings_count=0" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run GitLeaks
+        id: gitleaks
+        if: inputs.run_gitleaks == 'true'
+        continue-on-error: true
+        run: |
+          # Install gitleaks
+          GITLEAKS_VERSION="8.18.4"
+          wget -q "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" -O gitleaks.tar.gz
+          tar -xzf gitleaks.tar.gz gitleaks
+          chmod +x gitleaks
+
+          ./gitleaks detect --source . --report-format json --report-path gitleaks_results.json --no-git 2>/dev/null || true
+
+          if [ -f gitleaks_results.json ]; then
+            FINDINGS=$(python3 -c "
+          import json
+          try:
+              data = json.load(open('gitleaks_results.json'))
+              print(len(data) if isinstance(data, list) else 0)
+          except:
+              print('0')
+          ")
+            echo "findings_count=$FINDINGS" >> $GITHUB_OUTPUT
+            echo "GitLeaks found $FINDINGS findings"
+          else
+            echo "findings_count=0" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Prepare tool results
+        id: tool-results
+        run: |
+          python3 << 'PYTHON_SCRIPT'
+          import json
+          import os
+
+          tool_context = ""
+
+          # Semgrep results
+          try:
+              with open('semgrep_results.json') as f:
+                  data = json.load(f)
+                  results = data.get('results', [])
+                  if results:
+                      tool_context += "## Semgrep SAST Findings\n"
+                      for r in results[:20]:  # Limit to 20 findings
+                          rule = r.get('check_id', 'unknown')
+                          severity = r.get('extra', {}).get('severity', 'unknown')
+                          message = r.get('extra', {}).get('message', '')
+                          path = r.get('path', '')
+                          line = r.get('start', {}).get('line', 0)
+                          tool_context += f"- [{severity}] {rule} in {path}:{line} — {message[:200]}\n"
+                      tool_context += "\n"
+                  else:
+                      tool_context += "## Semgrep SAST: No findings\n\n"
+          except:
+              tool_context += "## Semgrep SAST: Not run or no results\n\n"
+
+          # GitLeaks results
+          try:
+              with open('gitleaks_results.json') as f:
+                  data = json.load(f)
+                  if isinstance(data, list) and data:
+                      tool_context += "## GitLeaks Secrets Findings\n"
+                      for r in data[:20]:
+                          rule = r.get('RuleID', 'unknown')
+                          path = r.get('File', '')
+                          line = r.get('StartLine', 0)
+                          match = r.get('Match', '')[:50]
+                          tool_context += f"- {rule} in {path}:{line} — `{match}...`\n"
+                      tool_context += "\n"
+                  else:
+                      tool_context += "## GitLeaks Secrets: No findings\n\n"
+          except:
+              tool_context += "## GitLeaks Secrets: Not run or no results\n\n"
+
+          # Write to file for next step
+          with open('tool_context.txt', 'w') as f:
+              f.write(tool_context)
+
+          print(tool_context)
+          PYTHON_SCRIPT
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Review safety with Claude
+        id: review
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          PR_DIFF: ${{ steps.diff.outputs.diff }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          MODEL: ${{ inputs.model }}
+          EXTRA_GUIDELINES: ${{ inputs.safety_guidelines }}
+        run: |
+          pip install anthropic
+          python << 'PYTHON_SCRIPT'
+          import anthropic
+          import os
+          import json
+          import re
+
+          client = anthropic.Anthropic()
+
+          diff = os.environ.get('PR_DIFF', '')
+          pr_number = os.environ.get('PR_NUMBER', '')
+          model = os.environ.get('MODEL', 'claude-opus-4-6')
+          extra_guidelines = os.environ.get('EXTRA_GUIDELINES', '')
+
+          # Load tool scan results
+          tool_context = ""
+          try:
+              with open('tool_context.txt') as f:
+                  tool_context = f.read()
+          except:
+              pass
+
+          extra_section = f"\n\n## Project-Specific Safety Guidelines\n{extra_guidelines}" if extra_guidelines else ""
+          tool_section = f"\n\n## Automated Scan Results\nThe following tool scans were run before your review. Use these as additional signal — confirm or dispute each finding.\n\n{tool_context}" if tool_context else ""
+
+          prompt = f"""You are Oin, a senior security and privacy engineer. Review this pull request diff focusing EXCLUSIVELY on security, privacy, and safety concerns.
+
+          ## Safety & Privacy Review Guidelines
+          - **Secrets & credentials**: Hardcoded API keys, passwords, tokens, connection strings
+          - **PII handling**: Unprotected personal data, missing anonymization, logging PII
+          - **Injection vulnerabilities**: SQL injection, command injection, XSS, template injection
+          - **Authentication & authorization**: Missing auth checks, privilege escalation, insecure session handling
+          - **Encryption**: Missing TLS, weak ciphers, plaintext sensitive data at rest
+          - **OWASP Top 10**: All categories (injection, broken auth, sensitive data exposure, XXE, broken access control, misconfiguration, XSS, insecure deserialization, vulnerable components, insufficient logging)
+          - **Privacy by design**: Data minimization, purpose limitation, consent mechanisms, data retention
+          - **Supply chain**: Suspicious dependencies, pinned versions, integrity verification
+          {extra_section}
+          {tool_section}
+
+          ## Severity Definitions
+          - **critical**: Actively exploitable vulnerability or data breach risk
+          - **major**: Security weakness that could be exploited with additional conditions
+          - **minor**: Defense-in-depth improvement, best practice deviation
+
+          ## Response Format
+          Respond with a JSON object:
+          {{
+            "decision": "APPROVE" | "REQUEST_CHANGES" | "COMMENT",
+            "summary": "Brief summary of the safety review",
+            "issues": [
+              {{
+                "severity": "critical" | "major" | "minor" | "suggestion",
+                "category": "secrets" | "pii" | "injection" | "auth" | "encryption" | "owasp" | "privacy" | "supply-chain",
+                "cwe": "CWE-XXX (if applicable, empty string otherwise)",
+                "owasp": "A01-A10 (if applicable, empty string otherwise)",
+                "tool_corroboration": "semgrep | gitleaks | none",
+                "file": "path/to/file",
+                "line": 42,
+                "description": "Description of the security/privacy issue",
+                "suggestion": "How to fix it"
+              }}
+            ]
+          }}
+
+          If there are no significant security or privacy issues, set decision to "APPROVE".
+          Only use "REQUEST_CHANGES" for critical or major security/privacy issues.
+          Do NOT review for general code quality, style, or performance — those are handled by separate reviewers.
+
+          ## Diff
+          ```diff
+          {diff[:40000]}
+          ```
+          """
+
+          response = client.messages.create(
+              model=model,
+              max_tokens=4096,
+              messages=[{"role": "user", "content": prompt}]
+          )
+
+          result = response.content[0].text
+
+          try:
+              json_match = re.search(r'\{[\s\S]*\}', result)
+              if json_match:
+                  review_data = json.loads(json_match.group())
+              else:
+                  review_data = {"decision": "COMMENT", "summary": result, "issues": []}
+          except:
+              review_data = {"decision": "COMMENT", "summary": result, "issues": []}
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f"decision={review_data.get('decision', 'COMMENT')}\n")
+              f.write(f"summary={review_data.get('summary', 'Safety review completed')[:500]}\n")
+
+          with open('review_result.json', 'w') as f:
+              json.dump(review_data, f)
+
+          print(json.dumps(review_data, indent=2))
+          PYTHON_SCRIPT
+
+      - name: Generate app token
+        id: app-token
+        if: inputs.app_id != ''
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ inputs.app_id }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: Post review comment
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ steps.app-token.outputs.token || github.token }}
+          script: |
+            const fs = require('fs');
+            const reviewData = JSON.parse(fs.readFileSync('review_result.json', 'utf8'));
+
+            const reviewerName = '${{ inputs.reviewer_name }}';
+            let body = `## ${reviewerName}'s Safety & Privacy Review\n\n`;
+            body += `**Decision:** ${reviewData.decision}\n\n`;
+            body += `### Summary\n${reviewData.summary}\n\n`;
+
+            // Tool scan summary
+            const semgrepCount = '${{ steps.semgrep.outputs.findings_count }}' || '0';
+            const gitleaksCount = '${{ steps.gitleaks.outputs.findings_count }}' || '0';
+            body += `### Automated Scans\n`;
+            body += `| Tool | Findings |\n|------|----------|\n`;
+            body += `| Semgrep SAST | ${semgrepCount} |\n`;
+            body += `| GitLeaks | ${gitleaksCount} |\n\n`;
+
+            if (reviewData.issues && reviewData.issues.length > 0) {
+              body += `### Security & Privacy Issues Found\n\n`;
+              for (const issue of reviewData.issues) {
+                const emoji = {
+                  critical: '🔴',
+                  major: '🟠',
+                  minor: '🟡',
+                  suggestion: '💡'
+                }[issue.severity] || '📝';
+
+                const category = issue.category ? ` [${issue.category}]` : '';
+                const cwe = issue.cwe ? ` (${issue.cwe})` : '';
+                const owasp = issue.owasp ? ` ${issue.owasp}` : '';
+                const tool = issue.tool_corroboration && issue.tool_corroboration !== 'none'
+                  ? ` — corroborated by ${issue.tool_corroboration}` : '';
+
+                body += `${emoji} **${issue.severity.toUpperCase()}**${category}${cwe}${owasp} `;
+                if (issue.file) body += `in \`${issue.file}\``;
+                if (issue.line) body += ` (line ${issue.line})`;
+                body += `${tool}\n`;
+                body += `> ${issue.description}\n`;
+                if (issue.suggestion) {
+                  body += `\n**Suggestion:** ${issue.suggestion}\n`;
+                }
+                body += `\n`;
+              }
+            }
+
+            const prUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/pull/${{ steps.pr.outputs.number }}`;
+            body += `\n---\n*Reviewed by ${reviewerName} (Safety & Privacy)*\n\n**PR:** ${prUrl}`;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: ${{ steps.pr.outputs.number }},
+              body: body
+            });
+
+            // Submit formal review if approving or requesting changes
+            if (reviewData.decision === 'APPROVE' || reviewData.decision === 'REQUEST_CHANGES') {
+              try {
+                await github.rest.pulls.createReview({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: ${{ steps.pr.outputs.number }},
+                  event: reviewData.decision,
+                  body: `${reviewerName} (Safety & Privacy): ${reviewData.summary}`
+                });
+              } catch (error) {
+                console.log(`Note: Could not submit formal review (${error.message}). The review comment was posted successfully.`);
+              }
+            }
+
+      - name: Trigger fix workflow
+        if: steps.review.outputs.decision == 'REQUEST_CHANGES' && inputs.trigger_fix_on_request_changes == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: '${{ inputs.fix_workflow_id }}',
+              ref: '${{ steps.pr.outputs.head_ref }}',
+              inputs: {
+                pr_number: '${{ steps.pr.outputs.number }}'
+              }
+            });
