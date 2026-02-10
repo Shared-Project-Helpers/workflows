@@ -29,6 +29,10 @@ Reusable GitHub Actions workflows for Claude-powered CI/CD automation (code revi
 - Agent roles (e.g., "Merge Checker") are configured per-workflow with custom display names
 - Formal GitHub reviews (APPROVE/REQUEST_CHANGES) are submitted, not just comments
 
+## Related
+
+- `~/.dotfiles/docs/code-review-pipeline.md` — Pipeline architecture docs (agent roles, flow diagrams, branch protection, design decisions)
+
 ## Working with this repo
 
 - No build step — all code lives in workflow YAML files
