@@ -16,14 +16,15 @@ Consumer repos are thin boilerplate — they define triggers and pass secrets. A
 
 | Persona | Wrapper | Core | Role |
 |---------|---------|------|------|
-| **Thorin Oakenshield** | `thorin-review.yml` | `claude-review.yml` | Code quality, bugs, logic |
-| **Dwalin** | `dwalin-perf-review.yml` | `claude-perf-review.yml` | Performance, efficiency, cost |
-| **Óin** | `oin-safety-review.yml` | `claude-safety-review.yml` | Security, privacy, OWASP |
-| **Dori** | `dori-test-review.yml` | `claude-test-review.yml` | Test coverage, test quality |
-| **Glóin** | `gloin-fix.yml` | `claude-fix.yml` | Fix General Reviewer's feedback |
-| **Glóin** | `gloin-issue-fix.yml` | `claude-issue-fix.yml` | Fix all reviewers' feedback, create issues |
-| **Balin** | `balin-merge-check.yml` | `claude-merge-check.yml` | Merge gate, verifies all approvals |
-| **Nori** | `nori-test-runner.yml` | `claude-test-runner.yml` | Autonomous test generation & execution |
+| **Thorin (Code Review)** | `thorin-code-review.yml` | `claude-code-review.yml` | Code quality, bugs, logic (claude-code-action) |
+| **Thorin (Code Review)** | `thorin-review.yml` | `claude-review.yml` | Code quality, bugs, logic (Python SDK, deprecated) |
+| **Dwalin (Performance)** | `dwalin-perf-review.yml` | `claude-perf-review.yml` | Performance, efficiency, cost |
+| **Óin (Safety)** | `oin-safety-review.yml` | `claude-safety-review.yml` | Security, privacy, OWASP |
+| **Dori (Test)** | `dori-test-review.yml` | `claude-test-review.yml` | Test coverage, test quality |
+| **Glóin (Fix)** | `gloin-fix.yml` | `claude-fix.yml` | Fix General Reviewer's feedback |
+| **Glóin (Fix)** | `gloin-issue-fix.yml` | `claude-issue-fix.yml` | Fix all reviewers' feedback, create issues |
+| **Balin (Merge)** | `balin-merge-check.yml` | `claude-merge-check.yml` | Merge gate, verifies all approvals |
+| **Nori (Test Runner)** | `nori-test-runner.yml` | `claude-test-runner.yml` | Autonomous test generation & execution |
 
 ## Pipeline Flow
 
@@ -52,9 +53,9 @@ Glóin Issue Fix Agent creates GitHub Issues for critical problems outside PR sc
 
 Wrappers embed all agent configuration and forward dynamic inputs (like `app_id`, `pr_number`) and secrets from the consumer.
 
-### Thorin — Code Review (`thorin-review.yml`)
+### Thorin (Code Review) — Code Review (`thorin-code-review.yml`)
 
-Wraps `claude-review.yml`. Embeds: persona name, KMP review guidelines, auto-merge settings.
+Wraps `claude-code-review.yml` using `anthropics/claude-code-action@v1`. Full codebase access, interactive follow-ups via `@thorin`, progress tracking, and fix links.
 
 **Consumer usage:**
 
@@ -66,6 +67,8 @@ on:
     types: [opened, synchronize, reopened]
   issue_comment:
     types: [created]
+  pull_request_review_comment:
+    types: [created]
 
 permissions:
   contents: write
@@ -73,14 +76,23 @@ permissions:
   issues: write
   actions: write
 
+concurrency:
+  group: review-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: false
+
 jobs:
   review:
     if: |
-      github.event_name == 'pull_request' ||
+      (github.event_name == 'pull_request' &&
+       github.event.sender.login != 'github-actions[bot]') ||
       (github.event_name == 'issue_comment' &&
        github.event.issue.pull_request &&
-       contains(github.event.comment.body, '@claude'))
-    uses: Shared-Project-Helpers/workflows/.github/workflows/thorin-review.yml@main
+       !endsWith(github.event.sender.login, '[bot]') &&
+       contains(github.event.comment.body, '@thorin')) ||
+      (github.event_name == 'pull_request_review_comment' &&
+       !endsWith(github.event.sender.login, '[bot]') &&
+       contains(github.event.comment.body, '@thorin'))
+    uses: Shared-Project-Helpers/workflows/.github/workflows/thorin-code-review.yml@main
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       APP_PRIVATE_KEY: ${{ secrets.THORIN_APP_PRIVATE_KEY }}
@@ -92,11 +104,23 @@ jobs:
 
 **Secrets:** `ANTHROPIC_API_KEY` (required), `APP_PRIVATE_KEY` (optional)
 
+---
+
+### Thorin (Code Review) — Code Review, deprecated (`thorin-review.yml`)
+
+> **Deprecated**: Use `thorin-code-review.yml` instead. This wrapper uses the Python SDK approach (diff-only review). Kept for rollback.
+
+Wraps `claude-review.yml`. Embeds: persona name, KMP review guidelines, auto-merge settings.
+
+**Inputs:** `app_id` (optional)
+
+**Secrets:** `ANTHROPIC_API_KEY` (required), `APP_PRIVATE_KEY` (optional)
+
 **Outputs:** `decision`, `pr_number`, `head_ref`
 
 ---
 
-### Dwalin — Performance Review (`dwalin-perf-review.yml`)
+### Dwalin (Performance) — Performance Review (`dwalin-perf-review.yml`)
 
 Wraps `claude-perf-review.yml`. Embeds: persona name, KMP performance guidelines.
 
@@ -123,7 +147,7 @@ jobs:
 
 ---
 
-### Óin — Safety & Privacy Review (`oin-safety-review.yml`)
+### Óin (Safety) — Safety & Privacy Review (`oin-safety-review.yml`)
 
 Wraps `claude-safety-review.yml`. Embeds: persona name, safety guidelines, Semgrep + GitLeaks enabled.
 
@@ -150,7 +174,7 @@ jobs:
 
 ---
 
-### Dori — Test Review (`dori-test-review.yml`)
+### Dori (Test) — Test Review (`dori-test-review.yml`)
 
 Wraps `claude-test-review.yml`. Embeds: persona name, KMP test guidelines.
 
@@ -177,7 +201,7 @@ jobs:
 
 ---
 
-### Glóin — Fix Agent (`gloin-fix.yml`)
+### Glóin (Fix) — Fix Agent (`gloin-fix.yml`)
 
 Wraps `claude-fix.yml`. Embeds: persona name, commit author.
 
@@ -209,7 +233,7 @@ jobs:
 
 ---
 
-### Glóin — Issue Fix Agent (`gloin-issue-fix.yml`)
+### Glóin (Fix) — Issue Fix Agent (`gloin-issue-fix.yml`)
 
 Wraps `claude-issue-fix.yml`. Embeds: persona name, commit author.
 
@@ -241,7 +265,7 @@ jobs:
 
 ---
 
-### Balin — Merge Readiness Check (`balin-merge-check.yml`)
+### Balin (Merge) — Merge Readiness Check (`balin-merge-check.yml`)
 
 Wraps `claude-merge-check.yml`. Embeds: persona name.
 
@@ -261,7 +285,7 @@ jobs:
       APP_PRIVATE_KEY: ${{ secrets.THORIN_APP_PRIVATE_KEY }}
     with:
       pr_number: ${{ github.event.inputs.pr_number || github.event.issue.number }}
-      required_reviewer_names: 'Dwalin,Óin,Dori'
+      required_reviewer_names: 'Dwalin (Performance),Óin (Safety),Dori (Test)'
       app_id: ${{ vars.THORIN_APP_ID }}
 ```
 
@@ -273,7 +297,7 @@ jobs:
 
 ---
 
-### Nori — Test Runner (`nori-test-runner.yml`)
+### Nori (Test Runner) — Test Runner (`nori-test-runner.yml`)
 
 Wraps `claude-test-runner.yml`. Embeds: persona name, commit author, KMP test guidelines. Provides KMP defaults for test_command, source_paths, test_paths, setup_java (overridable).
 
@@ -332,7 +356,8 @@ Core workflows are called by wrappers, not directly by consumer repos. See wrapp
 
 | Core Workflow | Inputs | Secrets | Outputs |
 |--------------|--------|---------|---------|
-| `claude-review.yml` | model, review_guidelines, diff_limit, excluded_files, auto_merge_label, auto_merge_method, reviewer_name, app_id, trigger_fix_on_request_changes, trigger_merge_check_on_approve, fix_workflow_id, merge_check_workflow_id, create_tracked_issues | ANTHROPIC_API_KEY, APP_PRIVATE_KEY | decision, pr_number, head_ref |
+| `claude-code-review.yml` | trigger_phrase, prompt, settings, app_id, additional_permissions | ANTHROPIC_API_KEY, APP_PRIVATE_KEY | — |
+| `claude-review.yml` *(deprecated)* | model, review_guidelines, diff_limit, excluded_files, auto_merge_label, auto_merge_method, reviewer_name, app_id, trigger_fix_on_request_changes, trigger_merge_check_on_approve, fix_workflow_id, merge_check_workflow_id, create_tracked_issues | ANTHROPIC_API_KEY, APP_PRIVATE_KEY | decision, pr_number, head_ref |
 | `claude-perf-review.yml` | model, perf_guidelines, diff_limit, excluded_files, reviewer_name, app_id, trigger_fix_on_request_changes, fix_workflow_id | ANTHROPIC_API_KEY, APP_PRIVATE_KEY | decision, pr_number, head_ref |
 | `claude-safety-review.yml` | model, safety_guidelines, diff_limit, excluded_files, reviewer_name, app_id, trigger_fix_on_request_changes, fix_workflow_id, run_semgrep, run_gitleaks, semgrep_rules | ANTHROPIC_API_KEY, APP_PRIVATE_KEY | decision, pr_number, head_ref, semgrep_findings, gitleaks_findings |
 | `claude-test-review.yml` | model, test_guidelines, diff_limit, excluded_files, reviewer_name, app_id, trigger_fix_on_request_changes, fix_workflow_id, test_command | ANTHROPIC_API_KEY, APP_PRIVATE_KEY | decision, pr_number, head_ref, tests_passed |
@@ -359,11 +384,11 @@ Core workflows are called by wrappers, not directly by consumer repos. See wrapp
 
 ## Triggering
 
-- **Thorin (Code Review)**: Runs automatically on PR open/update, or comment `@claude`
-- **Dwalin (Performance Review)**: Runs automatically on PR open/update, or comment `@perf-review`
-- **Óin (Safety Review)**: Runs automatically on PR open/update, or comment `@safety-review`
-- **Dori (Test Review)**: Runs automatically on PR open/update, or comment `@test-review`
-- **Glóin (Fix Agent)**: Dispatched automatically by Thorin on `REQUEST_CHANGES`, or comment `@claude fix`
-- **Glóin (Issue Fix Agent)**: Dispatched automatically by other reviewers on `REQUEST_CHANGES`, or comment `@issue-fix`
-- **Balin (Merge Check)**: Dispatched automatically by Thorin on `APPROVE`, or comment `@balin`
+- **Thorin (Code Review)**: Runs automatically on PR open/update, or comment `@thorin` (interactive follow-ups supported)
+- **Dwalin (Performance)**: Runs automatically on PR open/update, or comment `@perf-review`
+- **Óin (Safety)**: Runs automatically on PR open/update, or comment `@safety-review`
+- **Dori (Test)**: Runs automatically on PR open/update, or comment `@test-review`
+- **Glóin (Fix)**: Dispatched automatically by Thorin on `REQUEST_CHANGES`, or comment `@claude fix`
+- **Glóin (Fix) Issue Fix**: Dispatched automatically by other reviewers on `REQUEST_CHANGES`, or comment `@issue-fix`
+- **Balin (Merge)**: Dispatched automatically by Thorin on `APPROVE`, or comment `@balin`
 - **Nori (Test Runner)**: Scheduled weekly, manual dispatch, or comment `@test-runner` on a PR

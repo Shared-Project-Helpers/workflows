@@ -6,18 +6,20 @@ Reusable GitHub Actions workflows for Claude-powered CI/CD automation (code revi
 
 ### Agent wrappers (consumer repos call these)
 
-- `.github/workflows/thorin-review.yml` — Thorin Oakenshield: code review wrapper
-- `.github/workflows/dwalin-perf-review.yml` — Dwalin: performance review wrapper
-- `.github/workflows/oin-safety-review.yml` — Óin: safety & privacy review wrapper
-- `.github/workflows/dori-test-review.yml` — Dori: test review wrapper
-- `.github/workflows/gloin-fix.yml` — Glóin: fix agent wrapper
-- `.github/workflows/gloin-issue-fix.yml` — Glóin: issue fix agent wrapper
-- `.github/workflows/balin-merge-check.yml` — Balin: merge readiness check wrapper
-- `.github/workflows/nori-test-runner.yml` — Nori: test runner wrapper
+- `.github/workflows/thorin-review.yml` — Thorin (Code Review): Python SDK code review wrapper (deprecated)
+- `.github/workflows/thorin-code-review.yml` — Thorin (Code Review): claude-code-action code review wrapper
+- `.github/workflows/dwalin-perf-review.yml` — Dwalin (Performance): performance review wrapper
+- `.github/workflows/oin-safety-review.yml` — Óin (Safety): safety & privacy review wrapper
+- `.github/workflows/dori-test-review.yml` — Dori (Test): test review wrapper
+- `.github/workflows/gloin-fix.yml` — Glóin (Fix): fix agent wrapper
+- `.github/workflows/gloin-issue-fix.yml` — Glóin (Fix): issue fix agent wrapper
+- `.github/workflows/balin-merge-check.yml` — Balin (Merge): merge readiness check wrapper
+- `.github/workflows/nori-test-runner.yml` — Nori (Test Runner): test runner wrapper
 
 ### Core workflows (called by wrappers, not directly by consumers)
 
-- `.github/workflows/claude-review.yml` — General Reviewer: automated PR code review
+- `.github/workflows/claude-code-review.yml` — Code Review (Action): claude-code-action based review (full codebase access, interactive)
+- `.github/workflows/claude-review.yml` — General Reviewer: automated PR code review (Python SDK, deprecated)
 - `.github/workflows/claude-perf-review.yml` — Performance Reviewer: performance, efficiency, cost review
 - `.github/workflows/claude-safety-review.yml` — Safety Reviewer: security & privacy review (with Semgrep + GitLeaks)
 - `.github/workflows/claude-test-review.yml` — Test Reviewer: test coverage and quality review

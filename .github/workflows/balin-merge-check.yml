@@ -1,4 +1,4 @@
-name: 'Balin — Merge Readiness Check'
+name: 'Balin (Merge) — Merge Readiness Check'
 
 on:
   workflow_call:
@@ -41,7 +41,7 @@ jobs:
     uses: ./.github/workflows/claude-merge-check.yml
     with:
       pr_number: ${{ inputs.pr_number }}
-      checker_name: 'Balin'
+      checker_name: 'Balin (Merge)'
       required_reviewer_names: ${{ inputs.required_reviewer_names }}
       app_id: ${{ inputs.app_id }}
     secrets:

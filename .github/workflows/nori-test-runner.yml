@@ -1,4 +1,4 @@
-name: 'Nori — Test Runner'
+name: 'Nori (Test Runner) — Test Runner'
 
 on:
   workflow_call:
@@ -66,7 +66,7 @@ jobs:
       source_paths: ${{ inputs.source_paths }}
       test_paths: ${{ inputs.test_paths }}
       setup_java: ${{ inputs.setup_java }}
-      runner_name: 'Nori'
+      runner_name: 'Nori (Test Runner)'
       commit_author_name: 'Nori'
       commit_author_email: 'nori@temporal-company.com'
       test_guidelines: |

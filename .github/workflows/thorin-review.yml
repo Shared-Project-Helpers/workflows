@@ -1,4 +1,4 @@
-name: 'Thorin — Code Review'
+name: 'Thorin (Code Review) — Code Review'
 
 on:
   workflow_call:
@@ -28,7 +28,7 @@ jobs:
   review:
     uses: ./.github/workflows/claude-review.yml
     with:
-      reviewer_name: 'Thorin Oakenshield'
+      reviewer_name: 'Thorin (Code Review)'
       review_guidelines: |
         - Follow Kotlin coding conventions
         - Use coroutines for async operations

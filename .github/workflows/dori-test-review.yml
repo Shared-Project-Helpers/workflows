@@ -1,4 +1,4 @@
-name: 'Dori — Test Review'
+name: 'Dori (Test) — Test Review'
 
 on:
   workflow_call:
@@ -31,7 +31,7 @@ jobs:
   review:
     uses: ./.github/workflows/claude-test-review.yml
     with:
-      reviewer_name: 'Dori'
+      reviewer_name: 'Dori (Test)'
       test_guidelines: |
         - Kotlin Multiplatform: check for shared module tests (commonTest, androidUnitTest, iosTest, jvmTest, jsTest)
         - Compose UI: check for Compose UI tests using createComposeRule

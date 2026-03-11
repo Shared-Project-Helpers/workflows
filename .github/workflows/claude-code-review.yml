@@ -1,0 +1,70 @@
+name: Claude Code Review (Action)
+
+on:
+  workflow_call:
+    inputs:
+      trigger_phrase:
+        description: 'Trigger phrase for interactive responses (e.g. @thorin)'
+        required: false
+        default: ''
+        type: string
+      prompt:
+        description: 'Review instructions and persona prompt'
+        required: true
+        type: string
+      settings:
+        description: 'Claude Code settings JSON (permissions, etc.)'
+        required: false
+        default: ''
+        type: string
+      app_id:
+        description: 'GitHub App ID for custom bot identity (leave empty to use github-actions[bot])'
+        required: false
+        default: ''
+        type: string
+      additional_permissions:
+        description: 'Additional permissions for claude-code-action'
+        required: false
+        default: 'contents: write'
+        type: string
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: true
+      APP_PRIVATE_KEY:
+        required: false
+        description: 'GitHub App private key for custom bot identity'
+
+jobs:
+  review:
+    name: Code Review (Action)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch base branch for diffing
+        run: git fetch origin ${{ github.event.pull_request.base.ref || 'main' }} --depth=1
+
+      - name: Generate app token
+        id: app-token
+        if: inputs.app_id != ''
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ inputs.app_id }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: Run Claude Code Action
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ steps.app-token.outputs.token || github.token }}
+          trigger_phrase: ${{ inputs.trigger_phrase }}
+          use_sticky_comment: true
+          track_progress: true
+          include_fix_links: true
+          additional_permissions: ${{ inputs.additional_permissions }}
+          settings: ${{ inputs.settings }}
+          prompt: ${{ inputs.prompt }}

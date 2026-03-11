@@ -1,4 +1,4 @@
-name: 'Óin — Safety & Privacy Review'
+name: 'Óin (Safety) — Safety & Privacy Review'
 
 on:
   workflow_call:
@@ -34,7 +34,7 @@ jobs:
   review:
     uses: ./.github/workflows/claude-safety-review.yml
     with:
-      reviewer_name: 'Óin'
+      reviewer_name: 'Óin (Safety)'
       run_semgrep: 'true'
       run_gitleaks: 'true'
       safety_guidelines: |

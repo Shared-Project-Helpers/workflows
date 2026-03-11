@@ -1,4 +1,4 @@
-name: 'Dwalin — Performance Review'
+name: 'Dwalin (Performance) — Performance Review'
 
 on:
   workflow_call:
@@ -28,7 +28,7 @@ jobs:
   review:
     uses: ./.github/workflows/claude-perf-review.yml
     with:
-      reviewer_name: 'Dwalin'
+      reviewer_name: 'Dwalin (Performance)'
       perf_guidelines: |
         - Watch for N+1 patterns in Ktor client calls
         - Ensure Kotlin coroutines are used properly (no blocking in suspend functions)
