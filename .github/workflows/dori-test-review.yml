@@ -1,0 +1,45 @@
+name: 'Dori — Test Review'
+
+on:
+  workflow_call:
+    inputs:
+      app_id:
+        description: 'GitHub App ID (varies per consumer repo)'
+        required: false
+        default: ''
+        type: string
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: true
+      APP_PRIVATE_KEY:
+        required: false
+    outputs:
+      decision:
+        description: 'Review decision (APPROVE, REQUEST_CHANGES, or COMMENT)'
+        value: ${{ jobs.review.outputs.decision }}
+      pr_number:
+        description: 'Pull request number'
+        value: ${{ jobs.review.outputs.pr_number }}
+      head_ref:
+        description: 'PR head branch ref'
+        value: ${{ jobs.review.outputs.head_ref }}
+      tests_passed:
+        description: 'Whether tests passed (true/false/skipped)'
+        value: ${{ jobs.review.outputs.tests_passed }}
+
+jobs:
+  review:
+    uses: ./.github/workflows/claude-test-review.yml
+    with:
+      reviewer_name: 'Dori'
+      test_guidelines: |
+        - Kotlin Multiplatform: check for shared module tests (commonTest, androidUnitTest, iosTest, jvmTest, jsTest)
+        - Compose UI: check for Compose UI tests using createComposeRule
+        - Ktor client: check for MockEngine-based tests for HTTP calls
+        - Verify test naming follows conventions (should_expectedResult_when_condition)
+        - Check for proper coroutine test usage (runTest, TestDispatcher)
+        - Ensure platform-specific code has platform-specific tests
+      app_id: ${{ inputs.app_id }}
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}

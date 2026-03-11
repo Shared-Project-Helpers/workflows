@@ -1,0 +1,50 @@
+name: 'Óin — Safety & Privacy Review'
+
+on:
+  workflow_call:
+    inputs:
+      app_id:
+        description: 'GitHub App ID (varies per consumer repo)'
+        required: false
+        default: ''
+        type: string
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: true
+      APP_PRIVATE_KEY:
+        required: false
+    outputs:
+      decision:
+        description: 'Review decision (APPROVE, REQUEST_CHANGES, or COMMENT)'
+        value: ${{ jobs.review.outputs.decision }}
+      pr_number:
+        description: 'Pull request number'
+        value: ${{ jobs.review.outputs.pr_number }}
+      head_ref:
+        description: 'PR head branch ref'
+        value: ${{ jobs.review.outputs.head_ref }}
+      semgrep_findings:
+        description: 'Number of Semgrep findings'
+        value: ${{ jobs.review.outputs.semgrep_findings }}
+      gitleaks_findings:
+        description: 'Number of GitLeaks findings'
+        value: ${{ jobs.review.outputs.gitleaks_findings }}
+
+jobs:
+  review:
+    uses: ./.github/workflows/claude-safety-review.yml
+    with:
+      reviewer_name: 'Óin'
+      run_semgrep: 'true'
+      run_gitleaks: 'true'
+      safety_guidelines: |
+        - Never commit API keys, secrets, or credentials
+        - Ensure Ktor client uses HTTPS for all external calls
+        - Check for proper certificate pinning on mobile clients
+        - Verify no PII is logged or stored unencrypted
+        - SwiftUI: check for proper Keychain usage for sensitive data
+        - Android: check for proper EncryptedSharedPreferences usage
+      app_id: ${{ inputs.app_id }}
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}

@@ -1,0 +1,41 @@
+name: 'Dwalin — Performance Review'
+
+on:
+  workflow_call:
+    inputs:
+      app_id:
+        description: 'GitHub App ID (varies per consumer repo)'
+        required: false
+        default: ''
+        type: string
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: true
+      APP_PRIVATE_KEY:
+        required: false
+    outputs:
+      decision:
+        description: 'Review decision (APPROVE, REQUEST_CHANGES, or COMMENT)'
+        value: ${{ jobs.review.outputs.decision }}
+      pr_number:
+        description: 'Pull request number'
+        value: ${{ jobs.review.outputs.pr_number }}
+      head_ref:
+        description: 'PR head branch ref'
+        value: ${{ jobs.review.outputs.head_ref }}
+
+jobs:
+  review:
+    uses: ./.github/workflows/claude-perf-review.yml
+    with:
+      reviewer_name: 'Dwalin'
+      perf_guidelines: |
+        - Watch for N+1 patterns in Ktor client calls
+        - Ensure Kotlin coroutines are used properly (no blocking in suspend functions)
+        - Check for efficient use of Compose state (avoid unnecessary recompositions)
+        - Verify KMP shared module does not pull platform-specific heavy dependencies
+        - Check for proper resource cleanup in multiplatform code (streams, connections)
+      app_id: ${{ inputs.app_id }}
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
