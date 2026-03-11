@@ -6,6 +6,7 @@ Reusable GitHub Actions workflows for Claude-powered CI/CD automation (code revi
 
 ### Agent wrappers (consumer repos call these)
 
+- `.github/workflows/anthropic-code-review.yml` — Anthropic (Code Review): minimal claude-code-action code review wrapper
 - `.github/workflows/thorin-review.yml` — Thorin (Code Review): Python SDK code review wrapper (deprecated)
 - `.github/workflows/thorin-code-review.yml` — Thorin (Code Review): claude-code-action code review wrapper
 - `.github/workflows/dwalin-perf-review.yml` — Dwalin (Performance): performance review wrapper
