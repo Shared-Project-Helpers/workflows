@@ -6,7 +6,7 @@ on:
       model:
         description: 'Claude model to use'
         required: false
-        default: 'claude-opus-4-6'
+        default: 'claude-sonnet-4-5-20250929'
         type: string
       perf_guidelines:
         description: 'Additional performance review guidelines (appended to defaults)'
@@ -138,7 +138,7 @@ jobs:
 
           diff = os.environ.get('PR_DIFF', '')
           pr_number = os.environ.get('PR_NUMBER', '')
-          model = os.environ.get('MODEL', 'claude-opus-4-6')
+          model = os.environ.get('MODEL', 'claude-sonnet-4-5-20250929')
           extra_guidelines = os.environ.get('EXTRA_GUIDELINES', '')
 
           extra_section = f"\n\n## Project-Specific Performance Guidelines\n{extra_guidelines}" if extra_guidelines else ""

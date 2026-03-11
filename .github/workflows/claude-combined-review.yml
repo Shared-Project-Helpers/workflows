@@ -1,0 +1,676 @@
+name: Claude Combined Review
+
+on:
+  workflow_call:
+    inputs:
+      model:
+        description: 'Claude model to use'
+        required: false
+        default: 'claude-sonnet-4-5-20250929'
+        type: string
+      enable_perf_review:
+        description: 'Enable performance review domain'
+        required: false
+        default: 'true'
+        type: string
+      enable_safety_review:
+        description: 'Enable safety & privacy review domain'
+        required: false
+        default: 'true'
+        type: string
+      enable_test_review:
+        description: 'Enable test review domain'
+        required: false
+        default: 'true'
+        type: string
+      perf_guidelines:
+        description: 'Additional performance review guidelines'
+        required: false
+        default: ''
+        type: string
+      safety_guidelines:
+        description: 'Additional safety/privacy review guidelines'
+        required: false
+        default: ''
+        type: string
+      test_guidelines:
+        description: 'Additional test review guidelines'
+        required: false
+        default: ''
+        type: string
+      diff_limit:
+        description: 'Max diff size in bytes'
+        required: false
+        default: '50000'
+        type: string
+      excluded_files:
+        description: 'Git pathspec for excluded files'
+        required: false
+        default: ':!*.lock :!package-lock.json'
+        type: string
+      reviewer_name:
+        description: 'Display name for the combined reviewer persona'
+        required: false
+        default: 'Combined Reviewer'
+        type: string
+      app_id:
+        description: 'GitHub App ID for custom bot identity (leave empty to use github-actions[bot])'
+        required: false
+        default: ''
+        type: string
+      trigger_fix_on_request_changes:
+        description: 'Trigger fix workflow when review requests changes'
+        required: false
+        default: 'true'
+        type: string
+      fix_workflow_id:
+        description: 'Fix workflow filename to dispatch'
+        required: false
+        default: 'claude-issue-fix.yml'
+        type: string
+      run_semgrep:
+        description: 'Run Semgrep SAST scan (only if safety review enabled)'
+        required: false
+        default: 'true'
+        type: string
+      run_gitleaks:
+        description: 'Run GitLeaks secrets scan (only if safety review enabled)'
+        required: false
+        default: 'true'
+        type: string
+      semgrep_rules:
+        description: 'Semgrep ruleset to use (default: auto)'
+        required: false
+        default: 'auto'
+        type: string
+      test_command:
+        description: 'Command to run tests (empty = skip test execution)'
+        required: false
+        default: ''
+        type: string
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: true
+      APP_PRIVATE_KEY:
+        required: false
+        description: 'GitHub App private key for custom bot identity'
+    outputs:
+      decision:
+        description: 'Overall review decision (worst-case across all domains)'
+        value: ${{ jobs.review.outputs.decision }}
+      pr_number:
+        description: 'Pull request number'
+        value: ${{ jobs.review.outputs.pr_number }}
+      head_ref:
+        description: 'PR head branch ref'
+        value: ${{ jobs.review.outputs.head_ref }}
+
+jobs:
+  review:
+    name: Combined Review
+    runs-on: ubuntu-latest
+    outputs:
+      decision: ${{ steps.review.outputs.decision }}
+      pr_number: ${{ steps.pr.outputs.number }}
+      head_ref: ${{ steps.pr.outputs.head_ref }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.ref || github.head_ref }}
+
+      - name: Get PR info
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            let prNumber, baseSha, headSha, headRef;
+
+            if (context.eventName === 'pull_request' || context.eventName === 'pull_request_target') {
+              prNumber = context.payload.pull_request.number;
+              baseSha = context.payload.pull_request.base.sha;
+              headSha = context.payload.pull_request.head.sha;
+              headRef = context.payload.pull_request.head.ref;
+            } else {
+              prNumber = context.payload.issue.number;
+              const { data: pr } = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: prNumber
+              });
+              baseSha = pr.base.sha;
+              headSha = pr.head.sha;
+              headRef = pr.head.ref;
+            }
+
+            core.setOutput('number', prNumber);
+            core.setOutput('base_sha', baseSha);
+            core.setOutput('head_sha', headSha);
+            core.setOutput('head_ref', headRef);
+
+      - name: Get diff
+        id: diff
+        run: |
+          DELIMITER="DIFF_$(openssl rand -hex 16)"
+          echo "diff<<${DELIMITER}" >> $GITHUB_OUTPUT
+          git diff ${{ steps.pr.outputs.base_sha }}..${{ steps.pr.outputs.head_sha }} -- . ${{ inputs.excluded_files }} | head -c ${{ inputs.diff_limit }} >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          echo "${DELIMITER}" >> $GITHUB_OUTPUT
+
+      # --- Safety tools (conditional) ---
+
+      - name: Run Semgrep SAST
+        id: semgrep
+        if: inputs.enable_safety_review == 'true' && inputs.run_semgrep == 'true'
+        continue-on-error: true
+        run: |
+          pip install semgrep
+          semgrep scan --config ${{ inputs.semgrep_rules }} --json --quiet . > semgrep_results.json 2>/dev/null || true
+
+          if [ -f semgrep_results.json ]; then
+            FINDINGS=$(python3 -c "
+          import json
+          try:
+              data = json.load(open('semgrep_results.json'))
+              results = data.get('results', [])
+              print(len(results))
+          except:
+              print('0')
+          ")
+            echo "findings_count=$FINDINGS" >> $GITHUB_OUTPUT
+            echo "Semgrep found $FINDINGS findings"
+          else
+            echo "findings_count=0" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run GitLeaks
+        id: gitleaks
+        if: inputs.enable_safety_review == 'true' && inputs.run_gitleaks == 'true'
+        continue-on-error: true
+        run: |
+          GITLEAKS_VERSION="8.18.4"
+          wget -q "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" -O gitleaks.tar.gz
+          tar -xzf gitleaks.tar.gz gitleaks
+          chmod +x gitleaks
+
+          ./gitleaks detect --source . --report-format json --report-path gitleaks_results.json --no-git 2>/dev/null || true
+
+          if [ -f gitleaks_results.json ]; then
+            FINDINGS=$(python3 -c "
+          import json
+          try:
+              data = json.load(open('gitleaks_results.json'))
+              print(len(data) if isinstance(data, list) else 0)
+          except:
+              print('0')
+          ")
+            echo "findings_count=$FINDINGS" >> $GITHUB_OUTPUT
+            echo "GitLeaks found $FINDINGS findings"
+          else
+            echo "findings_count=0" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Prepare tool results
+        id: tool-results
+        if: inputs.enable_safety_review == 'true'
+        run: |
+          python3 << 'PYTHON_SCRIPT'
+          import json
+
+          tool_context = ""
+
+          # Semgrep results
+          try:
+              with open('semgrep_results.json') as f:
+                  data = json.load(f)
+                  results = data.get('results', [])
+                  if results:
+                      tool_context += "## Semgrep SAST Findings\n"
+                      for r in results[:20]:
+                          rule = r.get('check_id', 'unknown')
+                          severity = r.get('extra', {}).get('severity', 'unknown')
+                          message = r.get('extra', {}).get('message', '')
+                          path = r.get('path', '')
+                          line = r.get('start', {}).get('line', 0)
+                          tool_context += f"- [{severity}] {rule} in {path}:{line} — {message[:200]}\n"
+                      tool_context += "\n"
+                  else:
+                      tool_context += "## Semgrep SAST: No findings\n\n"
+          except:
+              tool_context += "## Semgrep SAST: Not run or no results\n\n"
+
+          # GitLeaks results
+          try:
+              with open('gitleaks_results.json') as f:
+                  data = json.load(f)
+                  if isinstance(data, list) and data:
+                      tool_context += "## GitLeaks Secrets Findings\n"
+                      for r in data[:20]:
+                          rule = r.get('RuleID', 'unknown')
+                          path = r.get('File', '')
+                          line = r.get('StartLine', 0)
+                          match = r.get('Match', '')[:50]
+                          tool_context += f"- {rule} in {path}:{line} — `{match}...`\n"
+                      tool_context += "\n"
+                  else:
+                      tool_context += "## GitLeaks Secrets: No findings\n\n"
+          except:
+              tool_context += "## GitLeaks Secrets: Not run or no results\n\n"
+
+          with open('tool_context.txt', 'w') as f:
+              f.write(tool_context)
+
+          print(tool_context)
+          PYTHON_SCRIPT
+
+      # --- Test detection (conditional) ---
+
+      - name: Detect test files and structure
+        id: test-detection
+        if: inputs.enable_test_review == 'true'
+        run: |
+          TEST_INFO=""
+
+          TEST_FILES=$(find . -type f \( \
+            -name "*Test.kt" -o -name "*Tests.kt" -o -name "*Spec.kt" \
+            -o -name "*Test.java" -o -name "*Tests.java" \
+            -o -name "*Test.swift" -o -name "*Tests.swift" \
+            -o -name "*.test.ts" -o -name "*.test.js" -o -name "*.spec.ts" -o -name "*.spec.js" \
+            -o -name "test_*.py" -o -name "*_test.py" -o -name "*_test.go" \
+          \) 2>/dev/null | head -50)
+
+          if [ -n "$TEST_FILES" ]; then
+            TEST_INFO="## Existing Test Files\n$(echo "$TEST_FILES" | head -50)\n"
+          else
+            TEST_INFO="## Existing Test Files\nNo test files found in the repository.\n"
+          fi
+
+          CONFIG_FILES=""
+          for f in build.gradle.kts build.gradle pom.xml package.json Cargo.toml go.mod pytest.ini setup.cfg pyproject.toml; do
+            if [ -f "$f" ]; then
+              CONFIG_FILES="$CONFIG_FILES $f"
+            fi
+          done
+
+          if [ -n "$CONFIG_FILES" ]; then
+            TEST_INFO="$TEST_INFO\n## Build/Test Config Files Found\n$CONFIG_FILES\n"
+          fi
+
+          CHANGED_TEST_FILES=$(git diff --name-only ${{ steps.pr.outputs.base_sha }}..${{ steps.pr.outputs.head_sha }} | grep -iE '(test|spec|_test\.|\.test\.)' | head -20)
+          CHANGED_SOURCE_FILES=$(git diff --name-only ${{ steps.pr.outputs.base_sha }}..${{ steps.pr.outputs.head_sha }} | grep -viE '(test|spec|_test\.|\.test\.|\.md$|\.yml$|\.yaml$|\.json$|\.lock$)' | head -20)
+
+          TEST_INFO="$TEST_INFO\n## Changed Files in This PR\n"
+          TEST_INFO="$TEST_INFO\n### Source Files Changed\n${CHANGED_SOURCE_FILES:-None}\n"
+          TEST_INFO="$TEST_INFO\n### Test Files Changed\n${CHANGED_TEST_FILES:-None}\n"
+
+          DELIMITER="TEST_$(openssl rand -hex 16)"
+          echo "test_info<<${DELIMITER}" >> $GITHUB_OUTPUT
+          echo -e "$TEST_INFO" >> $GITHUB_OUTPUT
+          echo "${DELIMITER}" >> $GITHUB_OUTPUT
+
+      - name: Run tests
+        id: run-tests
+        if: inputs.enable_test_review == 'true' && inputs.test_command != ''
+        continue-on-error: true
+        run: |
+          echo "Running: ${{ inputs.test_command }}"
+          if ${{ inputs.test_command }} > test_output.txt 2>&1; then
+            echo "passed=true" >> $GITHUB_OUTPUT
+            echo "Tests passed"
+          else
+            echo "passed=false" >> $GITHUB_OUTPUT
+            echo "Tests failed"
+          fi
+
+          DELIMITER="OUT_$(openssl rand -hex 16)"
+          echo "output<<${DELIMITER}" >> $GITHUB_OUTPUT
+          tail -100 test_output.txt >> $GITHUB_OUTPUT
+          echo "${DELIMITER}" >> $GITHUB_OUTPUT
+
+      # --- Combined Claude review ---
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Combined review with Claude
+        id: review
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          PR_DIFF: ${{ steps.diff.outputs.diff }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          MODEL: ${{ inputs.model }}
+          ENABLE_PERF: ${{ inputs.enable_perf_review }}
+          ENABLE_SAFETY: ${{ inputs.enable_safety_review }}
+          ENABLE_TEST: ${{ inputs.enable_test_review }}
+          PERF_GUIDELINES: ${{ inputs.perf_guidelines }}
+          SAFETY_GUIDELINES: ${{ inputs.safety_guidelines }}
+          TEST_GUIDELINES: ${{ inputs.test_guidelines }}
+          TEST_INFO: ${{ steps.test-detection.outputs.test_info }}
+          TEST_PASSED: ${{ steps.run-tests.outputs.passed || 'skipped' }}
+          TEST_OUTPUT: ${{ steps.run-tests.outputs.output }}
+        run: |
+          pip install anthropic
+          python << 'PYTHON_SCRIPT'
+          import anthropic
+          import os
+          import json
+          import re
+
+          client = anthropic.Anthropic()
+
+          diff = os.environ.get('PR_DIFF', '')
+          model = os.environ.get('MODEL', 'claude-sonnet-4-5-20250929')
+          enable_perf = os.environ.get('ENABLE_PERF', 'true') == 'true'
+          enable_safety = os.environ.get('ENABLE_SAFETY', 'true') == 'true'
+          enable_test = os.environ.get('ENABLE_TEST', 'true') == 'true'
+
+          # Build domain-specific prompt sections
+          domains = []
+
+          if enable_perf:
+              perf_extra = os.environ.get('PERF_GUIDELINES', '')
+              perf_extra_section = f"\n### Project-Specific Performance Guidelines\n{perf_extra}" if perf_extra else ""
+              domains.append(f"""## DOMAIN: Performance
+          Review for performance, efficiency, and cost concerns.
+
+          ### Guidelines
+          - **Client-server efficiency**: Unnecessary API calls, missing pagination, over-fetching data
+          - **Bandwidth**: Large payloads, missing compression, redundant data transfer
+          - **Caching**: Missing cache opportunities, stale cache bugs, cache invalidation issues
+          - **Algorithm complexity**: O(n^2) or worse in hot paths, unnecessary iterations
+          - **Memory**: Leaks, unbounded growth, large allocations, retained references
+          - **Network**: Missing timeouts, no retry with backoff, connection pool exhaustion
+          - **Resource cleanup**: Unclosed streams, missing disposal, leaked coroutines/goroutines
+          - **Cost optimization**: Wasteful cloud resource usage, inefficient queries, missing indexes
+          {perf_extra_section}
+
+          ### Categories for issues
+          api-efficiency, bandwidth, caching, algorithm, memory, network, resource-cleanup, cost""")
+
+          if enable_safety:
+              safety_extra = os.environ.get('SAFETY_GUIDELINES', '')
+              safety_extra_section = f"\n### Project-Specific Safety Guidelines\n{safety_extra}" if safety_extra else ""
+
+              tool_context = ""
+              try:
+                  with open('tool_context.txt') as f:
+                      tool_context = f.read()
+              except:
+                  pass
+              tool_section = f"\n### Automated Scan Results\nUse these as additional signal — confirm or dispute each finding.\n\n{tool_context}" if tool_context else ""
+
+              domains.append(f"""## DOMAIN: Safety & Privacy
+          Review for security, privacy, and safety concerns.
+
+          ### Guidelines
+          - **Secrets & credentials**: Hardcoded API keys, passwords, tokens, connection strings
+          - **PII handling**: Unprotected personal data, missing anonymization, logging PII
+          - **Injection vulnerabilities**: SQL injection, command injection, XSS, template injection
+          - **Authentication & authorization**: Missing auth checks, privilege escalation, insecure session handling
+          - **Encryption**: Missing TLS, weak ciphers, plaintext sensitive data at rest
+          - **OWASP Top 10**: All categories
+          - **Privacy by design**: Data minimization, purpose limitation, consent mechanisms, data retention
+          - **Supply chain**: Suspicious dependencies, pinned versions, integrity verification
+          {safety_extra_section}
+          {tool_section}
+
+          ### Categories for issues
+          secrets, pii, injection, auth, encryption, owasp, privacy, supply-chain""")
+
+          if enable_test:
+              test_extra = os.environ.get('TEST_GUIDELINES', '')
+              test_extra_section = f"\n### Project-Specific Test Guidelines\n{test_extra}" if test_extra else ""
+
+              test_info = os.environ.get('TEST_INFO', '')
+              test_info_section = f"\n### Test File Context\n{test_info}" if test_info else ""
+
+              test_passed = os.environ.get('TEST_PASSED', 'skipped')
+              test_output = os.environ.get('TEST_OUTPUT', '')
+              if test_passed == 'true':
+                  test_exec_section = "\n### Test Execution Result\nAll tests PASSED."
+              elif test_passed == 'false':
+                  test_exec_section = f"\n### Test Execution Result\nTests FAILED.\n\nOutput (last 100 lines):\n```\n{test_output[:5000]}\n```"
+              else:
+                  test_exec_section = "\n### Test Execution Result\nTests were not executed (no test command configured)."
+
+              domains.append(f"""## DOMAIN: Testing
+          Review for test coverage and quality concerns.
+
+          ### Guidelines
+          - **Missing tests**: New code paths, functions, classes, or modules without corresponding tests
+          - **Test coverage gaps**: Edge cases, error paths, boundary conditions not tested
+          - **Test quality**: Tests that don't actually verify behavior (no assertions, testing implementation details)
+          - **Test maintenance**: Brittle tests, hardcoded values, tests coupled to implementation
+          - **Flaky test risk**: Tests relying on timing, external services, or non-deterministic behavior
+          - **Test organization**: Tests in wrong location, missing test utilities, duplicated test setup
+          - **Integration tests**: Missing integration tests for API endpoints, database operations
+          - **Test execution**: Whether existing tests still pass after changes
+          {test_extra_section}
+          {test_info_section}
+          {test_exec_section}
+
+          ### Categories for issues
+          missing-tests, test-quality, test-coverage, test-maintenance, flaky-tests, test-organization, test-execution""")
+
+          domain_names = []
+          if enable_perf:
+              domain_names.append('performance')
+          if enable_safety:
+              domain_names.append('safety')
+          if enable_test:
+              domain_names.append('test')
+
+          domains_text = "\n\n".join(domains)
+
+          prompt = f"""You are a senior engineering reviewer. Review this pull request diff across the following domains.
+          For each enabled domain, provide your assessment independently.
+
+          {domains_text}
+
+          ## Severity Definitions (all domains)
+          - **critical**: Will cause outages, data breaches, or test failures at scale
+          - **major**: Measurable degradation, exploitable weakness, or significant untested functionality
+          - **minor**: Suboptimal but acceptable, defense-in-depth improvement, missing edge case tests
+
+          ## Response Format
+          Respond with a JSON object. Include ONLY the enabled domains ({', '.join(domain_names)}):
+          {{
+            "domains": {{
+              {', '.join(f'"{name}": {{ "decision": "APPROVE|REQUEST_CHANGES|COMMENT", "summary": "Brief summary", "issues": [{{ "severity": "critical|major|minor|suggestion", "category": "from domain categories above", "file": "path/to/file", "line": 42, "description": "Description", "suggestion": "How to fix" }}] }}' for name in domain_names)}
+            }}
+          }}
+
+          Rules:
+          - Only use "REQUEST_CHANGES" for critical or major issues
+          - Each domain is independent — an APPROVE in one does not affect others
+          - Do NOT review for general code quality or style — that is handled by a separate reviewer
+
+          ## Diff
+          ```diff
+          {diff[:40000]}
+          ```
+          """
+
+          response = client.messages.create(
+              model=model,
+              max_tokens=8192,
+              messages=[{"role": "user", "content": prompt}]
+          )
+
+          result = response.content[0].text
+
+          try:
+              json_match = re.search(r'\{[\s\S]*\}', result)
+              if json_match:
+                  review_data = json.loads(json_match.group())
+              else:
+                  review_data = {"domains": {name: {"decision": "COMMENT", "summary": "Could not parse response", "issues": []} for name in domain_names}}
+          except:
+              review_data = {"domains": {name: {"decision": "COMMENT", "summary": "Could not parse response", "issues": []} for name in domain_names}}
+
+          # Determine overall decision (worst-case across all domains)
+          decisions = [review_data.get("domains", {}).get(name, {}).get("decision", "COMMENT") for name in domain_names]
+          if "REQUEST_CHANGES" in decisions:
+              overall_decision = "REQUEST_CHANGES"
+          elif "COMMENT" in decisions:
+              overall_decision = "COMMENT"
+          else:
+              overall_decision = "APPROVE"
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f"decision={overall_decision}\n")
+
+          with open('review_result.json', 'w') as f:
+              json.dump(review_data, f)
+
+          print(json.dumps(review_data, indent=2))
+          PYTHON_SCRIPT
+
+      - name: Generate app token
+        id: app-token
+        if: inputs.app_id != ''
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ inputs.app_id }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: Post review comment
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ steps.app-token.outputs.token || github.token }}
+          script: |
+            const fs = require('fs');
+            const reviewData = JSON.parse(fs.readFileSync('review_result.json', 'utf8'));
+            const reviewerName = '${{ inputs.reviewer_name }}';
+            const enablePerf = '${{ inputs.enable_perf_review }}' === 'true';
+            const enableSafety = '${{ inputs.enable_safety_review }}' === 'true';
+            const enableTest = '${{ inputs.enable_test_review }}' === 'true';
+
+            const domains = reviewData.domains || {};
+
+            // Determine overall decision
+            const decisions = Object.values(domains).map(d => d.decision);
+            let overallDecision = 'APPROVE';
+            if (decisions.includes('REQUEST_CHANGES')) overallDecision = 'REQUEST_CHANGES';
+            else if (decisions.includes('COMMENT')) overallDecision = 'COMMENT';
+
+            let body = `## ${reviewerName}'s Review\n\n`;
+            body += `**Overall Decision:** ${overallDecision}\n\n`;
+
+            const emojiMap = {
+              critical: '\u{1F534}',
+              major: '\u{1F7E0}',
+              minor: '\u{1F7E1}',
+              suggestion: '\u{1F4A1}'
+            };
+
+            function renderIssues(issues) {
+              let text = '';
+              if (issues && issues.length > 0) {
+                for (const issue of issues) {
+                  const emoji = emojiMap[issue.severity] || '\u{1F4DD}';
+                  const category = issue.category ? ` [${issue.category}]` : '';
+                  text += `${emoji} **${issue.severity.toUpperCase()}**${category} `;
+                  if (issue.file) text += `in \`${issue.file}\``;
+                  if (issue.line) text += ` (line ${issue.line})`;
+                  text += `\n`;
+                  text += `> ${issue.description}\n`;
+                  if (issue.suggestion) {
+                    text += `\n**Suggestion:** ${issue.suggestion}\n`;
+                  }
+                  text += `\n`;
+                }
+              }
+              return text;
+            }
+
+            // Performance section
+            if (enablePerf && domains.performance) {
+              const perf = domains.performance;
+              body += `---\n### Performance Review\n`;
+              body += `**Decision:** ${perf.decision}\n\n`;
+              body += `${perf.summary}\n\n`;
+              body += renderIssues(perf.issues);
+            }
+
+            // Safety section
+            if (enableSafety && domains.safety) {
+              const safety = domains.safety;
+              body += `---\n### Safety & Privacy Review\n`;
+              body += `**Decision:** ${safety.decision}\n\n`;
+
+              const semgrepCount = '${{ steps.semgrep.outputs.findings_count }}' || '0';
+              const gitleaksCount = '${{ steps.gitleaks.outputs.findings_count }}' || '0';
+              body += `| Tool | Findings |\n|------|----------|\n`;
+              body += `| Semgrep | ${semgrepCount} |\n`;
+              body += `| GitLeaks | ${gitleaksCount} |\n\n`;
+
+              body += `${safety.summary}\n\n`;
+              body += renderIssues(safety.issues);
+            }
+
+            // Test section
+            if (enableTest && domains.test) {
+              const test = domains.test;
+              body += `---\n### Test Review\n`;
+              body += `**Decision:** ${test.decision}\n\n`;
+
+              const testPassed = '${{ steps.run-tests.outputs.passed || 'skipped' }}';
+              if (testPassed === 'true') {
+                body += `\u{2705} **Test execution:** All tests passed\n\n`;
+              } else if (testPassed === 'false') {
+                body += `\u{274C} **Test execution:** Tests failed\n\n`;
+              } else {
+                body += `\u{23ED}\u{FE0F} **Test execution:** Not configured\n\n`;
+              }
+
+              body += `${test.summary}\n\n`;
+              body += renderIssues(test.issues);
+            }
+
+            const prUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/pull/${{ steps.pr.outputs.number }}`;
+            body += `\n---\n*Reviewed by ${reviewerName}*\n\n**PR:** ${prUrl}`;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: ${{ steps.pr.outputs.number }},
+              body: body
+            });
+
+            // Submit formal review (worst-case decision)
+            if (overallDecision === 'APPROVE' || overallDecision === 'REQUEST_CHANGES') {
+              const summaries = Object.entries(domains)
+                .map(([name, d]) => `${name}: ${d.decision}`)
+                .join(', ');
+              try {
+                await github.rest.pulls.createReview({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: ${{ steps.pr.outputs.number }},
+                  event: overallDecision,
+                  body: `${reviewerName}: ${summaries}`
+                });
+              } catch (error) {
+                console.log(`Note: Could not submit formal review (${error.message}). The review comment was posted successfully.`);
+              }
+            }
+
+      - name: Trigger fix workflow
+        if: steps.review.outputs.decision == 'REQUEST_CHANGES' && inputs.trigger_fix_on_request_changes == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: '${{ inputs.fix_workflow_id }}',
+              ref: '${{ steps.pr.outputs.head_ref }}',
+              inputs: {
+                pr_number: '${{ steps.pr.outputs.number }}'
+              }
+            });

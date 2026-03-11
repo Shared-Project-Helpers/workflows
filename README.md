@@ -25,6 +25,7 @@ Consumer repos are thin boilerplate — they define triggers and pass secrets. A
 | **Glóin (Fix)** | `gloin-fix.yml` | `claude-fix.yml` | Fix General Reviewer's feedback |
 | **Glóin (Fix)** | `gloin-issue-fix.yml` | `claude-issue-fix.yml` | Fix all reviewers' feedback, create issues |
 | **Balin (Merge)** | `balin-merge-check.yml` | `claude-merge-check.yml` | Merge gate, verifies all approvals |
+| **Bifur (Combined)** | `bifur-combined-review.yml` | `claude-combined-review.yml` | Combined perf/safety/test review (1 API call) |
 | **Nori (Test Runner)** | `nori-test-runner.yml` | `claude-test-runner.yml` | Autonomous test generation & execution |
 
 ## Pipeline Flow
@@ -36,6 +37,7 @@ PR opened/updated
   ├──→ Dwalin (Performance Review)      ─┤  all five run in parallel
   ├──→ Óin (Safety Review)              ─┤
   └──→ Dori (Test Review)               ─┘
+                                          (or Bifur (Combined) instead of Dwalin/Óin/Dori)
          │
          ├─ Thorin REQUEST_CHANGES      → Glóin Fix Agent          → push re-triggers all
          ├─ Dwalin REQUEST_CHANGES      → Glóin Issue Fix Agent   → push re-triggers all
@@ -256,6 +258,33 @@ jobs:
 
 ---
 
+### Bifur (Combined) — Combined Review (`bifur-combined-review.yml`)
+
+Wraps `claude-combined-review.yml`. Combines performance, safety, and test reviews into a single API call (Sonnet 4.5). Cost-effective alternative to running Dwalin + Óin + Dori separately.
+
+**Consumer usage:**
+
+```yaml
+jobs:
+  combined-review:
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request &&
+       contains(github.event.comment.body, '@review-all'))
+    uses: Shared-Project-Helpers/workflows/.github/workflows/bifur-combined-review.yml@main
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+```
+
+**Inputs:** `app_id` (optional)
+
+**Secrets:** `ANTHROPIC_API_KEY` (required), `APP_PRIVATE_KEY` (optional)
+
+**Outputs:** `decision`, `pr_number`, `head_ref`
+
+---
+
 ### Glóin (Fix) — Fix Agent (`gloin-fix.yml`)
 
 Wraps `claude-fix.yml`. Embeds: persona name, commit author.
@@ -411,7 +440,8 @@ Core workflows are called by wrappers, not directly by consumer repos. See wrapp
 
 | Core Workflow | Inputs | Secrets | Outputs |
 |--------------|--------|---------|---------|
-| `claude-code-review.yml` | trigger_phrase, prompt, settings, app_id, additional_permissions | ANTHROPIC_API_KEY, APP_PRIVATE_KEY | — |
+| `claude-code-review.yml` | trigger_phrase, prompt, settings, max_turns, app_id, additional_permissions | ANTHROPIC_API_KEY, APP_PRIVATE_KEY | — |
+| `claude-combined-review.yml` | model, enable_perf_review, enable_safety_review, enable_test_review, perf_guidelines, safety_guidelines, test_guidelines, diff_limit, excluded_files, reviewer_name, app_id, trigger_fix_on_request_changes, fix_workflow_id, run_semgrep, run_gitleaks, semgrep_rules, test_command | ANTHROPIC_API_KEY, APP_PRIVATE_KEY | decision, pr_number, head_ref |
 | `claude-review.yml` *(deprecated)* | model, review_guidelines, diff_limit, excluded_files, auto_merge_label, auto_merge_method, reviewer_name, app_id, trigger_fix_on_request_changes, trigger_merge_check_on_approve, fix_workflow_id, merge_check_workflow_id, create_tracked_issues | ANTHROPIC_API_KEY, APP_PRIVATE_KEY | decision, pr_number, head_ref |
 | `claude-perf-review.yml` | model, perf_guidelines, diff_limit, excluded_files, reviewer_name, app_id, trigger_fix_on_request_changes, fix_workflow_id | ANTHROPIC_API_KEY, APP_PRIVATE_KEY | decision, pr_number, head_ref |
 | `claude-safety-review.yml` | model, safety_guidelines, diff_limit, excluded_files, reviewer_name, app_id, trigger_fix_on_request_changes, fix_workflow_id, run_semgrep, run_gitleaks, semgrep_rules | ANTHROPIC_API_KEY, APP_PRIVATE_KEY | decision, pr_number, head_ref, semgrep_findings, gitleaks_findings |
@@ -444,6 +474,7 @@ Core workflows are called by wrappers, not directly by consumer repos. See wrapp
 - **Dwalin (Performance)**: Runs automatically on PR open/update, or comment `@perf-review`
 - **Óin (Safety)**: Runs automatically on PR open/update, or comment `@safety-review`
 - **Dori (Test)**: Runs automatically on PR open/update, or comment `@test-review`
+- **Bifur (Combined)**: Comment `@review-all` (combines Dwalin + Óin + Dori in 1 API call)
 - **Glóin (Fix)**: Dispatched automatically by Thorin on `REQUEST_CHANGES`, or comment `@claude fix`
 - **Glóin (Fix) Issue Fix**: Dispatched automatically by other reviewers on `REQUEST_CHANGES`, or comment `@issue-fix`
 - **Balin (Merge)**: Dispatched automatically by Thorin on `APPROVE`, or comment `@balin`
