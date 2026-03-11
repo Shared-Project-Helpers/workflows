@@ -1,0 +1,49 @@
+name: 'Balin — Merge Readiness Check'
+
+on:
+  workflow_call:
+    inputs:
+      pr_number:
+        description: 'Pull request number to check'
+        required: true
+        type: string
+      required_reviewer_names:
+        description: 'Comma-separated list of required reviewer persona names'
+        required: false
+        default: ''
+        type: string
+      app_id:
+        description: 'GitHub App ID (varies per consumer repo)'
+        required: false
+        default: ''
+        type: string
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: true
+      APP_PRIVATE_KEY:
+        required: false
+    outputs:
+      ready:
+        description: 'Whether the PR is ready to merge (true/false)'
+        value: ${{ jobs.check.outputs.ready }}
+      blocking_issues:
+        description: 'Number of blocking issues found'
+        value: ${{ jobs.check.outputs.blocking_issues }}
+      behind:
+        description: 'Whether the PR branch is behind the base (true/false)'
+        value: ${{ jobs.check.outputs.behind }}
+      head_ref:
+        description: 'PR head branch ref'
+        value: ${{ jobs.check.outputs.head_ref }}
+
+jobs:
+  check:
+    uses: ./.github/workflows/claude-merge-check.yml
+    with:
+      pr_number: ${{ inputs.pr_number }}
+      checker_name: 'Balin'
+      required_reviewer_names: ${{ inputs.required_reviewer_names }}
+      app_id: ${{ inputs.app_id }}
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}

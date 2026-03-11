@@ -1,0 +1,87 @@
+name: 'Nori — Test Runner'
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: 'Operation mode: standalone (create branch + PR) or pr (push to existing PR branch)'
+        required: false
+        default: 'standalone'
+        type: string
+      pr_number:
+        description: 'Target PR number (required for pr mode)'
+        required: false
+        default: ''
+        type: string
+      test_command:
+        description: 'Command to run tests'
+        required: false
+        default: './gradlew :shared:allTests -PskipAndroid'
+        type: string
+      source_paths:
+        description: 'Paths to scan for source code (space-separated)'
+        required: false
+        default: 'shared/src/commonMain'
+        type: string
+      test_paths:
+        description: 'Paths where tests should be written (space-separated)'
+        required: false
+        default: 'shared/src/commonTest'
+        type: string
+      setup_java:
+        description: 'Java version to set up (empty to skip)'
+        required: false
+        default: '17'
+        type: string
+      app_id:
+        description: 'GitHub App ID (varies per consumer repo)'
+        required: false
+        default: ''
+        type: string
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: true
+      PAT:
+        required: false
+      APP_PRIVATE_KEY:
+        required: false
+    outputs:
+      tests_generated:
+        description: 'Number of test files generated'
+        value: ${{ jobs.run.outputs.tests_generated }}
+      tests_passed:
+        description: 'Whether all tests passed'
+        value: ${{ jobs.run.outputs.tests_passed }}
+      pr_number:
+        description: 'PR number (created or target)'
+        value: ${{ jobs.run.outputs.pr_number }}
+
+jobs:
+  run:
+    uses: ./.github/workflows/claude-test-runner.yml
+    with:
+      mode: ${{ inputs.mode }}
+      pr_number: ${{ inputs.pr_number }}
+      test_command: ${{ inputs.test_command }}
+      source_paths: ${{ inputs.source_paths }}
+      test_paths: ${{ inputs.test_paths }}
+      setup_java: ${{ inputs.setup_java }}
+      runner_name: 'Nori'
+      commit_author_name: 'Nori'
+      commit_author_email: 'nori@temporal-company.com'
+      test_guidelines: |
+        - This is a Kotlin Multiplatform (KMP) project
+        - Tests go in shared/src/commonTest/kotlin/company/crpt/shared/
+        - Use package company.crpt.shared
+        - Use kotlin.test annotations: @Test, @BeforeTest, etc.
+        - Use kotlinx.coroutines.test.runTest for coroutine tests
+        - Use io.ktor.client.engine.mock.MockEngine for HTTP client tests
+        - Import io.ktor.client.engine.mock.respond for mock responses
+        - Do NOT use JUnit — use kotlin.test only (multiplatform)
+        - Do NOT use platform-specific APIs — commonTest only
+        - Test file naming: <ClassName>Test.kt
+      app_id: ${{ inputs.app_id }}
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      PAT: ${{ secrets.PAT }}
+      APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}

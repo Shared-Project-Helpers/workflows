@@ -4,6 +4,19 @@ Reusable GitHub Actions workflows for Claude-powered CI/CD automation (code revi
 
 ## Project structure
 
+### Agent wrappers (consumer repos call these)
+
+- `.github/workflows/thorin-review.yml` — Thorin Oakenshield: code review wrapper
+- `.github/workflows/dwalin-perf-review.yml` — Dwalin: performance review wrapper
+- `.github/workflows/oin-safety-review.yml` — Óin: safety & privacy review wrapper
+- `.github/workflows/dori-test-review.yml` — Dori: test review wrapper
+- `.github/workflows/gloin-fix.yml` — Glóin: fix agent wrapper
+- `.github/workflows/gloin-issue-fix.yml` — Glóin: issue fix agent wrapper
+- `.github/workflows/balin-merge-check.yml` — Balin: merge readiness check wrapper
+- `.github/workflows/nori-test-runner.yml` — Nori: test runner wrapper
+
+### Core workflows (called by wrappers, not directly by consumers)
+
 - `.github/workflows/claude-review.yml` — General Reviewer: automated PR code review
 - `.github/workflows/claude-perf-review.yml` — Performance Reviewer: performance, efficiency, cost review
 - `.github/workflows/claude-safety-review.yml` — Safety Reviewer: security & privacy review (with Semgrep + GitLeaks)
@@ -12,6 +25,9 @@ Reusable GitHub Actions workflows for Claude-powered CI/CD automation (code revi
 - `.github/workflows/claude-issue-fix.yml` — Issue Fix Agent: applies fixes from all reviewers, creates GitHub Issues for deferred items
 - `.github/workflows/claude-merge-check.yml` — Merge Checker: merge readiness assessment (supports required reviewer approvals)
 - `.github/workflows/claude-test-runner.yml` — Test Runner: autonomous test generation, execution, and iteration
+
+### Other
+
 - `README.md` — Usage docs and configuration reference
 
 ## Tech stack
@@ -23,7 +39,9 @@ Reusable GitHub Actions workflows for Claude-powered CI/CD automation (code revi
 
 ## Key patterns
 
-- Workflows are designed to be called via `uses:` from consumer repos (reusable workflows)
+- **Three-layer architecture**: Consumer (triggers + secrets) → Wrapper (agent config) → Core (implementation)
+- Wrappers embed agent persona, guidelines, and settings; consumers only provide `app_id` and secrets
+- Core workflows are designed to be called via `uses:` from wrappers (reusable workflows)
 - Authentication uses either `GITHUB_TOKEN` or GitHub App tokens (`create-github-app-token@v1`)
 - Claude API calls use the `anthropic` Python SDK installed at runtime
 - Agent roles (e.g., "Merge Checker") are configured per-workflow with custom display names

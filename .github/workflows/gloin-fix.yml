@@ -1,0 +1,39 @@
+name: 'Glóin — Fix Agent'
+
+on:
+  workflow_call:
+    inputs:
+      pr_number:
+        description: 'Pull request number to fix'
+        required: true
+        type: string
+      app_id:
+        description: 'GitHub App ID (varies per consumer repo)'
+        required: false
+        default: ''
+        type: string
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: true
+      PAT:
+        required: false
+      APP_PRIVATE_KEY:
+        required: false
+    outputs:
+      files_changed:
+        description: 'Number of files changed'
+        value: ${{ jobs.fix.outputs.files_changed }}
+
+jobs:
+  fix:
+    uses: ./.github/workflows/claude-fix.yml
+    with:
+      pr_number: ${{ inputs.pr_number }}
+      fixer_name: 'Glóin'
+      commit_author_name: 'Glóin'
+      commit_author_email: 'gloin@temporal-company.com'
+      app_id: ${{ inputs.app_id }}
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      PAT: ${{ secrets.PAT }}
+      APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}

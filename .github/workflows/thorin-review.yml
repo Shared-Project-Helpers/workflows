@@ -1,0 +1,41 @@
+name: 'Thorin — Code Review'
+
+on:
+  workflow_call:
+    inputs:
+      app_id:
+        description: 'GitHub App ID (varies per consumer repo)'
+        required: false
+        default: ''
+        type: string
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: true
+      APP_PRIVATE_KEY:
+        required: false
+    outputs:
+      decision:
+        description: 'Review decision (APPROVE, REQUEST_CHANGES, or COMMENT)'
+        value: ${{ jobs.review.outputs.decision }}
+      pr_number:
+        description: 'Pull request number'
+        value: ${{ jobs.review.outputs.pr_number }}
+      head_ref:
+        description: 'PR head branch ref'
+        value: ${{ jobs.review.outputs.head_ref }}
+
+jobs:
+  review:
+    uses: ./.github/workflows/claude-review.yml
+    with:
+      reviewer_name: 'Thorin Oakenshield'
+      review_guidelines: |
+        - Follow Kotlin coding conventions
+        - Use coroutines for async operations
+        - Use expect/actual for platform-specific implementations in KMP
+      auto_merge_label: 'auto-merge'
+      auto_merge_method: 'squash'
+      app_id: ${{ inputs.app_id }}
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
