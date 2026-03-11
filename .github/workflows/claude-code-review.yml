@@ -22,6 +22,11 @@ on:
         required: false
         default: ''
         type: string
+      max_turns:
+        description: 'Maximum number of agentic turns for claude-code-action'
+        required: false
+        default: '5'
+        type: string
       additional_permissions:
         description: 'Additional permissions for claude-code-action'
         required: false
@@ -67,4 +72,5 @@ jobs:
           include_fix_links: true
           additional_permissions: ${{ inputs.additional_permissions }}
           settings: ${{ inputs.settings }}
+          claude_args: '--max-turns ${{ inputs.max_turns }}'
           prompt: ${{ inputs.prompt }}

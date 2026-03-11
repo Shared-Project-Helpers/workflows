@@ -15,6 +15,7 @@ Reusable GitHub Actions workflows for Claude-powered CI/CD automation (code revi
 - `.github/workflows/gloin-fix.yml` — Glóin (Fix): fix agent wrapper
 - `.github/workflows/gloin-issue-fix.yml` — Glóin (Fix): issue fix agent wrapper
 - `.github/workflows/balin-merge-check.yml` — Balin (Merge): merge readiness check wrapper
+- `.github/workflows/bifur-combined-review.yml` — Bifur (Combined): combined perf/safety/test review wrapper
 - `.github/workflows/nori-test-runner.yml` — Nori (Test Runner): test runner wrapper
 
 ### Core workflows (called by wrappers, not directly by consumers)
@@ -27,6 +28,7 @@ Reusable GitHub Actions workflows for Claude-powered CI/CD automation (code revi
 - `.github/workflows/claude-fix.yml` — Fix Agent: applies fixes from General Reviewer's feedback
 - `.github/workflows/claude-issue-fix.yml` — Issue Fix Agent: applies fixes from all reviewers, creates GitHub Issues for deferred items
 - `.github/workflows/claude-merge-check.yml` — Merge Checker: merge readiness assessment (supports required reviewer approvals)
+- `.github/workflows/claude-combined-review.yml` — Combined Reviewer: single-call perf/safety/test review (Sonnet 4.5)
 - `.github/workflows/claude-test-runner.yml` — Test Runner: autonomous test generation, execution, and iteration
 
 ### Other

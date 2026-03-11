@@ -8,6 +8,11 @@ on:
         required: false
         default: ''
         type: string
+      max_turns:
+        description: 'Maximum number of agentic turns for claude-code-action'
+        required: false
+        default: '5'
+        type: string
     secrets:
       ANTHROPIC_API_KEY:
         required: true
@@ -40,6 +45,7 @@ jobs:
             ]
           }
         }
+      max_turns: ${{ inputs.max_turns }}
       app_id: ${{ inputs.app_id }}
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
