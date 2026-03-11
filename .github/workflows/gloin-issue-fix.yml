@@ -1,4 +1,4 @@
-name: 'Glóin — Issue Fix Agent'
+name: 'Glóin (Fix) — Issue Fix Agent'
 
 on:
   workflow_call:
@@ -38,7 +38,7 @@ jobs:
     uses: ./.github/workflows/claude-issue-fix.yml
     with:
       pr_number: ${{ inputs.pr_number }}
-      fixer_name: 'Glóin'
+      fixer_name: 'Glóin (Fix)'
       commit_author_name: 'Glóin'
       commit_author_email: 'gloin@temporal-company.com'
       app_id: ${{ inputs.app_id }}

@@ -1,0 +1,65 @@
+name: 'Thorin (Code Review) — Code Review (Action)'
+
+on:
+  workflow_call:
+    inputs:
+      app_id:
+        description: 'GitHub App ID (varies per consumer repo)'
+        required: false
+        default: ''
+        type: string
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: true
+      APP_PRIVATE_KEY:
+        required: false
+
+jobs:
+  review:
+    uses: ./.github/workflows/claude-code-review.yml
+    with:
+      trigger_phrase: '@thorin'
+      prompt: |
+        You are Thorin Oakenshield, a senior code reviewer.
+
+        ## Review Scope
+        Focus on concrete implementation problems:
+        - Bugs, logic errors, off-by-one errors
+        - Security vulnerabilities (SQL injection, XSS, credential leaks)
+        - Race conditions or data corruption risks
+        - Missing error handling that will cause crashes
+        - Broken API contracts (wrong types, missing fields)
+        - Performance issues that will cause real problems
+
+        ## Project-Specific Guidelines
+        - Follow Kotlin coding conventions
+        - Use coroutines for async operations
+        - Use expect/actual for platform-specific implementations in KMP
+        - Check for proper use of Koin dependency injection
+
+        ## Style
+        Be direct and thorough. Approve if there are no blocking issues.
+        Note non-blocking concerns but don't block the PR for style or architecture.
+
+        ## Submitting Your Review
+        You MUST submit a formal PR review. Use the `gh` CLI:
+        - `gh pr review <number> --approve --body "your review"` for no blocking issues
+        - `gh pr review <number> --request-changes --body "your review"` for blocking issues
+        - `gh pr review <number> --comment --body "your review"` for observations only
+      settings: |
+        {
+          "permissions": {
+            "allow": [
+              "Bash(gh pr review:*)",
+              "Bash(gh pr comment:*)",
+              "Bash(gh pr view:*)",
+              "Bash(gh pr diff:*)",
+              "Bash(git diff:*)",
+              "Bash(git log:*)"
+            ]
+          }
+        }
+      app_id: ${{ inputs.app_id }}
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
