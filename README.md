@@ -16,6 +16,7 @@ Consumer repos are thin boilerplate — they define triggers and pass secrets. A
 
 | Persona | Wrapper | Core | Role |
 |---------|---------|------|------|
+| **Anthropic (Code Review)** | `anthropic-code-review.yml` | `claude-code-review.yml` | Minimal code review (claude-code-action) |
 | **Thorin (Code Review)** | `thorin-code-review.yml` | `claude-code-review.yml` | Code quality, bugs, logic (claude-code-action) |
 | **Thorin (Code Review)** | `thorin-review.yml` | `claude-review.yml` | Code quality, bugs, logic (Python SDK, deprecated) |
 | **Dwalin (Performance)** | `dwalin-perf-review.yml` | `claude-perf-review.yml` | Performance, efficiency, cost |
@@ -30,8 +31,9 @@ Consumer repos are thin boilerplate — they define triggers and pass secrets. A
 
 ```
 PR opened/updated
-  ├──→ Thorin (Code Review)             ─┐
-  ├──→ Dwalin (Performance Review)      ─┤  all four run in parallel
+  ├──→ Anthropic (Code Review)          ─┐
+  ├──→ Thorin (Code Review)             ─┤
+  ├──→ Dwalin (Performance Review)      ─┤  all five run in parallel
   ├──→ Óin (Safety Review)              ─┤
   └──→ Dori (Test Review)               ─┘
          │
@@ -52,6 +54,59 @@ Glóin Issue Fix Agent creates GitHub Issues for critical problems outside PR sc
 ## Agent Wrappers (consumer repos call these)
 
 Wrappers embed all agent configuration and forward dynamic inputs (like `app_id`, `pr_number`) and secrets from the consumer.
+
+### Anthropic (Code Review) — Code Review (`anthropic-code-review.yml`)
+
+Wraps `claude-code-review.yml` using `anthropics/claude-code-action@v1`. Minimal prompt — no custom persona, just reviews for bugs, security issues, and correctness. Interactive follow-ups via `@anthropic`.
+
+**Consumer usage:**
+
+```yaml
+name: Anthropic Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  actions: write
+
+concurrency:
+  group: anthropic-review-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  review:
+    if: |
+      (github.event_name == 'pull_request' &&
+       github.event.sender.login != 'github-actions[bot]') ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request &&
+       !endsWith(github.event.sender.login, '[bot]') &&
+       contains(github.event.comment.body, '@anthropic')) ||
+      (github.event_name == 'pull_request_review_comment' &&
+       !endsWith(github.event.sender.login, '[bot]') &&
+       contains(github.event.comment.body, '@anthropic'))
+    uses: Shared-Project-Helpers/workflows/.github/workflows/anthropic-code-review.yml@main
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      APP_PRIVATE_KEY: ${{ secrets.THORIN_APP_PRIVATE_KEY }}
+    with:
+      app_id: ${{ vars.THORIN_APP_ID }}
+```
+
+**Inputs:** `app_id` (optional)
+
+**Secrets:** `ANTHROPIC_API_KEY` (required), `APP_PRIVATE_KEY` (optional)
+
+---
 
 ### Thorin (Code Review) — Code Review (`thorin-code-review.yml`)
 
@@ -384,6 +439,7 @@ Core workflows are called by wrappers, not directly by consumer repos. See wrapp
 
 ## Triggering
 
+- **Anthropic (Code Review)**: Runs automatically on PR open/update, or comment `@anthropic` (interactive follow-ups supported)
 - **Thorin (Code Review)**: Runs automatically on PR open/update, or comment `@thorin` (interactive follow-ups supported)
 - **Dwalin (Performance)**: Runs automatically on PR open/update, or comment `@perf-review`
 - **Óin (Safety)**: Runs automatically on PR open/update, or comment `@safety-review`

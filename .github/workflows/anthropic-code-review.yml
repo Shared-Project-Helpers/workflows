@@ -1,0 +1,46 @@
+name: 'Anthropic (Code Review) — Code Review (Action)'
+
+on:
+  workflow_call:
+    inputs:
+      app_id:
+        description: 'GitHub App ID (varies per consumer repo)'
+        required: false
+        default: ''
+        type: string
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: true
+      APP_PRIVATE_KEY:
+        required: false
+
+jobs:
+  review:
+    uses: ./.github/workflows/claude-code-review.yml
+    with:
+      trigger_phrase: '@anthropic'
+      prompt: |
+        Review this pull request for bugs, security issues, and correctness. Submit a formal review using `gh pr review`.
+
+        ## Submitting Your Review
+        You MUST submit a formal PR review. Use the `gh` CLI:
+        - `gh pr review <number> --approve --body "your review"` for no blocking issues
+        - `gh pr review <number> --request-changes --body "your review"` for blocking issues
+        - `gh pr review <number> --comment --body "your review"` for observations only
+      settings: |
+        {
+          "permissions": {
+            "allow": [
+              "Bash(gh pr review:*)",
+              "Bash(gh pr comment:*)",
+              "Bash(gh pr view:*)",
+              "Bash(gh pr diff:*)",
+              "Bash(git diff:*)",
+              "Bash(git log:*)"
+            ]
+          }
+        }
+      app_id: ${{ inputs.app_id }}
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
