@@ -54,7 +54,7 @@ Reusable GitHub Actions workflows for Claude-powered CI/CD automation (code revi
 
 ## Related
 
-- `~/projects/dotfiles/docs/code-review-pipeline.md` — Pipeline architecture docs (agent roles, flow diagrams, branch protection, design decisions)
+- `~/projects/deprecated/dotfiles/docs/code-review-pipeline.md` — Pipeline architecture docs (agent roles, flow diagrams, branch protection, design decisions)
 
 ## Working with this repo
 
